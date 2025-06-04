@@ -1,1 +1,1 @@
-from runner.processor import process_video
+#pip install kafka-python fastapi opencv-python requests uvicorn

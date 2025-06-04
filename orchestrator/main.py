@@ -1,73 +1,27 @@
+import threading
+import time
 from fastapi import FastAPI
-from fastapi_utils.tasks import repeat_every
-from orchestrator.state_machine import ScenarioStateMachine
-import requests
+from orchestrator.kafka_consumer import listen
+from orchestrator.outbox import send_outbox_events  # Assuming you put the function here
 
-app = FastAPI()
-state_machines = {}
+app = FastAPI(title="Orchestrator")
 
-@app.on_event("startup")
-@repeat_every(seconds=2)  # Каждые 2 секунды проверяет статус сценариев
-def background_transition_check():
-    for scenario_id, state in scenarios.items():
+@app.get("/health")
+def health():
+    return {"status": "orchestrator alive"}
+
+def outbox_poller_loop():
+    while True:
         try:
-            sm = state_machines[scenario_id]
-            if sm.state == "init_startup":
-                sm.transition("in_startup_processing")
-                update_api_status(scenario_id, sm.state)
-            elif sm.state == "in_startup_processing":
-                sm.transition("active")
-                update_api_status(scenario_id, sm.state)
-            elif sm.state == "init_shutdown":
-                sm.transition("in_shutdown_processing")
-                update_api_status(scenario_id, sm.state)
-            elif sm.state == "in_shutdown_processing":
-                sm.transition("inactive")
-                update_api_status(scenario_id, sm.state)
+            send_outbox_events()
         except Exception as e:
-            print(f"[Orchestrator] Ошибка перехода состояния {scenario_id}: {e}")
+            print(f"Error in outbox poller: {e}")
+        time.sleep(5)  # adjust polling interval if needed
 
+# Start Kafka consumer in background thread
+threading.Thread(target=listen, daemon=True).start()
 
+# Start outbox poller in background thread
+threading.Thread(target=outbox_poller_loop, daemon=True).start()
 
-@app.post("/orchestrate/{scenario_id}/start")
-def start_scenario(scenario_id: str):
-    sm = ScenarioStateMachine("init_startup")
-    state_machines[scenario_id] = sm
-    sm.transition("in_startup_processing")
-    update_api_status(scenario_id, sm.state)
-    return {"scenario_id": scenario_id, "status": sm.state}
-
-
-def update_api_status(scenario_id: str, new_status: str):
-    try:
-        response = requests.post(
-            f"http://localhost:8000/scenario/{scenario_id}/",
-            json={"status": new_status},
-            timeout=5
-        )
-        response.raise_for_status()
-    except Exception as e:
-        print(f"[Orchestrator] Failed to update api status {scenario_id}: {e}")
-
-@app.post("/orchestrate/{scenario_id}/start")
-def start_scenario(scenario_id: str):
-    sm = ScenarioStateMachine()
-    sm.start_processing()
-    sm.activate()
-    scenarios[scenario_id] = sm.state
-
-    update_api_status(scenario_id, sm.state)
-
-    return {"scenario_id": scenario_id, "status": sm.state}
-
-@app.post("/orchestrate/{scenario_id}/stop")
-def stop_scenario(scenario_id: str):
-    sm = ScenarioStateMachine()
-    sm.initiate_shutdown()
-    sm.shutdown_processing()
-    sm.deactivate()
-    scenarios[scenario_id] = sm.state
-
-    update_api_status(scenario_id, sm.state)
-
-    return {"scenario_id": scenario_id, "status": sm.state}
+# uvicorn orchestrator.main:app --host 0.0.0.0 --port 8001

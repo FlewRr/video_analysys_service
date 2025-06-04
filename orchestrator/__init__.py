@@ -1,1 +1,1 @@
-from orchestrator.state_machine import ScenarioStateMachine
+# pip install fastapi uvicorn kafka-python
