@@ -1,6 +1,6 @@
 import threading
 from fastapi import FastAPI
-from inference.kafka_consumer import listen
+from kafka_consumer import listen
 
 app = FastAPI(title="Inference Service")
 

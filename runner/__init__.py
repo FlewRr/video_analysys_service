@@ -1,1 +1,4 @@
-#pip install kafka-python fastapi opencv-python requests uvicorn
+import runner.config
+import runner.kafka_listener
+import runner.inference_client
+import runner.video_utils

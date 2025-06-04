@@ -1,21 +1,32 @@
 import json
 from kafka import KafkaConsumer, KafkaProducer
-from runner.config import KAFKA_BOOTSTRAP_SERVERS, RUNNER_TOPIC, PREDICTION_TOPIC
-from runner.video_utils import extract_frames
-from runner.inference_client import send_to_inference
+from kafka.errors import NoBrokersAvailable
+import time
+from config import KAFKA_BOOTSTRAP_SERVERS, RUNNER_TOPIC, PREDICTION_TOPIC
+from video_utils import extract_frames
+from inference_client import send_to_inference
 import os
 
-consumer = KafkaConsumer(
-    RUNNER_TOPIC,
-    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    group_id="runner-group"
-)
+for i in range(10):
+    try:
+        consumer = KafkaConsumer(
+            RUNNER_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+            group_id="runner-group"
+        )
 
-producer = KafkaProducer(
-    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-    value_serializer=lambda v: json.dumps(v).encode('utf-8')
-)
+        producer = KafkaProducer(
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
+        break
+    except NoBrokersAvailable:
+        print("Kafka not available yet, retrying...") 
+        time.sleep(3)
+else:
+    raise Exception("Could not connect to Kafka after retrying")
+
 
 def handle_start(message):
     scenario_id = message["scenario_id"]

@@ -1,17 +1,31 @@
 import json
 from kafka import KafkaConsumer
-from orchestrator.config import KAFKA_BOOTSTRAP_SERVERS, SCENARIO_TOPIC, PREDICTION_TOPIC
-from orchestrator.scenario_store import create_scenario, update_scenario_state, set_predictions, get_scenario
-from orchestrator.state_machine import can_transition
-from orchestrator.kafka_producer import send_runner_command
+from kafka.errors import NoBrokersAvailable
+import time
+from config import KAFKA_BOOTSTRAP_SERVERS, SCENARIO_TOPIC, PREDICTION_TOPIC
+from scenarios import create_scenario, update_scenario_state, set_predictions, get_scenario
+from state_machine import can_transition
+from kafka_producer import send_runner_command
 
-consumer = KafkaConsumer(
-    SCENARIO_TOPIC,
-    PREDICTION_TOPIC,
-    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    group_id="orchestrator-group"
-)
+
+for i in range(10):
+    try:
+        consumer = KafkaConsumer(
+            SCENARIO_TOPIC,
+            PREDICTION_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+            group_id="orchestrator-group"
+        )
+        break
+    except NoBrokersAvailable:
+        print("Kafka not available yet, retrying...") 
+        time.sleep(3)
+
+else:
+    raise Exception("Could not connect to Kafka after retrying")
+
+
 
 def handle_scenario_message(message):
     msg_type = message.get("type")

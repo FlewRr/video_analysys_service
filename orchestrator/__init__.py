@@ -1,1 +1,3 @@
-# pip install fastapi uvicorn kafka-python
+import orchestrator.config
+import orchestrator.kafka_consumer
+import orchestrator.kafka_producer

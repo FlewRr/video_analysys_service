@@ -20,6 +20,6 @@ class OutboxEvent(Base):
     sent = Column(Boolean, default=False)
     sent_at = Column(DateTime, nullable=True)
 
-engine = create_engine('sqlite:///orchestrator.db')
+engine = create_engine('sqlite:///db')
 Base.metadata.create_all(engine)
 SessionLocal = sessionmaker(bind=engine)

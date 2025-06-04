@@ -1,5 +1,5 @@
 import requests
-from runner.config import INFERENCE_URL
+from config import INFERENCE_URL
 
 def send_to_inference(scenario_id: str, frames: list):
     results = []

@@ -1,17 +1,30 @@
 import json
 import cv2
 import numpy as np
+import time
 from kafka import KafkaConsumer
-from inference.config import KAFKA_BOOTSTRAP_SERVERS, INFERENCE_TOPIC
-from inference.yolo_nano import YoloNano
-from inference.kafka_producer import send_prediction
+from kafka.errors import NoBrokersAvailable
+from config import KAFKA_BOOTSTRAP_SERVERS, INFERENCE_TOPIC
+from yolo import YoloNano
+from kafka_producer import send_prediction
 
-consumer = KafkaConsumer(
-    INFERENCE_TOPIC,
-    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    group_id="inference-group"
-)
+
+for i in range(10):
+    try:
+        consumer = KafkaConsumer(
+            INFERENCE_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+            group_id="inference-group"
+        )
+        break
+    except NoBrokersAvailable:
+        print("Kafka not available yet, retrying...") 
+        time.sleep(3)
+
+else:
+    raise Exception("Could not connect to Kafka after retrying")
+
 
 yolo = YoloNano(device='cpu')  # or 'cuda' if GPU available
 

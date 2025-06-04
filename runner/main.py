@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 import threading
-from runner.kafka_listener import listen
+from kafka_listener import listen
 
 app = FastAPI()
 

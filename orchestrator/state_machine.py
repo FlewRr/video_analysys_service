@@ -1,4 +1,4 @@
-from orchestrator.config import ALLOWED_STATES
+from config import ALLOWED_STATES
 
 # Allowed transitions (updated with your correction)
 TRANSITIONS = {

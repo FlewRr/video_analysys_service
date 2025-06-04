@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
-from api.models import ScenarioInitRequest, ScenarioStateChangeRequest, ScenarioStatusResponse, PredictionResponse
-from api.scenario_state import create_scenario, update_scenario_state, get_scenario
-from api.kafka_client import send_scenario_message
+from models import ScenarioInitRequest, ScenarioStateChangeRequest, ScenarioStatusResponse, PredictionResponse
+from scenario_state import create_scenario, update_scenario_state, get_scenario
+from kafka_client import send_scenario_message
 
 router = APIRouter()
 
