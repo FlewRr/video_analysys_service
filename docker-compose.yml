@@ -13,7 +13,7 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      ZAFKA_ADVERTISED_HOST_NAME: kafka
+      KAFKA_ADVERTISED_HOST_NAME: kafka
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -48,11 +48,12 @@ services:
       - kafka
     networks:
       - mynetwork
-
+    volumes:
+      - /home/sfleur/Desktop/video_analysys_service:/videos
   inference:
     build: ./inference
     ports:
-      - "8003:8003"
+        - "8003:8003"
     depends_on:
       - kafka
     networks:

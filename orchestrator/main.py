@@ -1,20 +1,22 @@
-import threading
-import time
 from fastapi import FastAPI
-from kafka_consumer import listen
+from contextlib import asynccontextmanager
+from kafka_consumer import KafkaListener
 from outbox import outbox_poller_loop
+import threading
 
-app = FastAPI(title="Orchestrator")
+print("[Orchestrator] module load")
 
-@app.get("/health")
-def health():
-    return {"status": "orchestrator alive"}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("[Orchestrator] Starting background tasks...")
+    listener = KafkaListener()
+    threading.Thread(target=listener.listen, daemon=True).start()
+    threading.Thread(target=outbox_poller_loop, daemon=True).start()
+    yield
+    print("[Orchestrator] Shutdown...")
 
+app = FastAPI(title="Orchestrator", lifespan=lifespan)
 
-# Start Kafka consumer in background thread
-threading.Thread(target=listen, daemon=True).start()
-
-# Start outbox poller in background thread
-threading.Thread(target=outbox_poller_loop, daemon=True).start()
-
-# uvicorn main:app --host 0.0.0.0 --port 8001
+# @app.get("/health")
+# def health():
+#     return {"status": "orchestrator alive"}

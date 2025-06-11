@@ -9,22 +9,7 @@ from yolo import YoloNano
 from kafka_producer import send_prediction
 
 
-for i in range(10):
-    try:
-        consumer = KafkaConsumer(
-            INFERENCE_TOPIC,
-            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-            group_id="inference-group"
-        )
-        break
-    except NoBrokersAvailable:
-        print("Kafka not available yet, retrying...") 
-        time.sleep(3)
-
-else:
-    raise Exception("Could not connect to Kafka after retrying")
-
+consumer = None 
 
 yolo = YoloNano(device='cpu')  # or 'cuda' if GPU available
 
@@ -36,9 +21,27 @@ def decode_frame(frame_data):
     return frame
 
 def listen():
+    global consumer
+
+    for i in range(10):
+        try:
+            consumer = KafkaConsumer(
+                INFERENCE_TOPIC,
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                group_id="inference-group"
+            )
+            break
+        except NoBrokersAvailable:
+            print("Kafka not available yet, retrying...") 
+            time.sleep(3)
+
+    else:
+        raise Exception("Could not connect to Kafka after retrying")
+
     print("[Inference] Listening for frames...")
     for msg in consumer:
-        message = msg.value
+        messadge = msg.value
         scenario_id = message.get("scenario_id")
         frame_data = message.get("frame")  # e.g. list of bytes or base64 str
 

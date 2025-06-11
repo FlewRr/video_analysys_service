@@ -1,7 +1,7 @@
 from storage import SessionLocal, Scenario, OutboxEvent
 from sqlalchemy.exc import SQLAlchemyError
-import datetime
-
+from datetime import datetime
+ 
 _SCENARIOS = {}
 
 def create_scenario(scenario_id: str, video_path: str):
@@ -13,7 +13,10 @@ def create_scenario(scenario_id: str, video_path: str):
         "predictions": None
     }
 
-def update_scenario_state(scenario_id: str, new_state: str, event_payload: dict):
+def update_scenario_state(event_payload: dict):
+    scenario_id = event_payload.get("scenario_id")
+    new_state = event_payload.get("new_state")
+    
     session = SessionLocal()
     try:
         scenario = session.query(Scenario).get(scenario_id)
@@ -30,14 +33,13 @@ def update_scenario_state(scenario_id: str, new_state: str, event_payload: dict)
             payload=event_payload
         )
         session.add(outbox_event)
-
-        # Commit both scenario update and outbox insert atomically
         session.commit()
-    except SQLAlchemyError as e:
+    except Exception as e:
         session.rollback()
         raise e
     finally:
         session.close()
+
 
 def get_scenario(scenario_id: str):
     return _SCENARIOS.get(scenario_id)

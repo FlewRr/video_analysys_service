@@ -1,4 +1,5 @@
 fastapi
 uvicorn[standard]
 kafka-python
-opencv-python
+opencv-python   
+requests

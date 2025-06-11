@@ -32,7 +32,7 @@ def handle_start(message):
     scenario_id = message["scenario_id"]
     video_path = message["video_path"]
     print(f"[Runner] Starting scenario {scenario_id}")
-
+    
     if not os.path.exists(video_path):
         print(f"[Runner] Video not found: {video_path}")
         return
