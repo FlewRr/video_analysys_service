@@ -49,12 +49,15 @@ services:
     networks:
       - mynetwork
     volumes:
-      - /home/sfleur/Desktop/video_analysys_service:/videos
+      - ./videos:/videos
+
   inference:
     build: ./inference
     ports:
-        - "8003:8003"
+      - "8003:8003"
     depends_on:
       - kafka
     networks:
       - mynetwork
+    volumes:
+      - ./videos:/videos
