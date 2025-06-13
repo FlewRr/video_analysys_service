@@ -1,14 +1,13 @@
 from fastapi import APIRouter, HTTPException
+import os
+import json
 from models import ScenarioInitRequest, ScenarioStateChangeRequest, ScenarioStatusResponse, PredictionResponse
-from scenario_state import create_scenario, update_scenario_state, get_scenario
+from scenario_state import create_scenario, get_scenario
 from kafka_client import send_scenario_message
 
 router = APIRouter()
 
-ALLOWED_STATES = [
-    "init_startup", "in_startup_processing", "active",
-    "init_shutdown", "in_shutdown_processing", "inactive"
-]
+ALLOWED_STATES = json.loads(os.getenv('ALLOWED_STATES'))
 
 @router.post("/scenario/", status_code=201)
 def init_scenario(request: ScenarioInitRequest):
@@ -35,16 +34,14 @@ def change_scenario_state(scenario_id: str, request: ScenarioStateChangeRequest)
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
 
-    update_scenario_state(scenario_id, request.new_state)
-
-    # Notify orchestrator about state change
+    # Send state change request to orchestrator
     send_scenario_message({
-        "type": "state_change",
+        "type": "state_change_request",
         "scenario_id": scenario_id,
         "new_state": request.new_state
     })
 
-    return {"message": "Scenario state updated", "scenario_id": scenario_id, "new_state": request.new_state}
+    return {"message": "State change request sent", "scenario_id": scenario_id, "requested_state": request.new_state}
 
 @router.get("/scenario/{scenario_id}/", response_model=ScenarioStatusResponse)
 def get_scenario_status(scenario_id: str):

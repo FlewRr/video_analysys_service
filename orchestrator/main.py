@@ -3,12 +3,17 @@ from contextlib import asynccontextmanager
 from kafka_consumer import KafkaListener
 from kafka_producer import OrchestratorKafkaProducer
 from outbox import outbox_poller_loop
+from storage import Base, engine  # Import storage to ensure tables are created
 import threading
 import logging
 import signal
+import uvicorn
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Ensure database tables exist
+Base.metadata.create_all(engine)
 
 # Global variables to store thread references
 kafka_thread = None
@@ -57,3 +62,9 @@ def health():
         "kafka_thread_alive": kafka_thread.is_alive() if kafka_thread else False,
         "outbox_thread_alive": outbox_thread.is_alive() if outbox_thread else False
     }
+
+
+import os
+
+db_path = os.path.abspath('/db/db.sqlite')
+logger.info(f"[DEBUG] Using SQLite DB at {db_path}")

@@ -4,6 +4,8 @@ from routes import router
 from kafka_client import KafkaClient
 import logging
 import signal
+from scenario_state import _listen_for_updates
+import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,6 +20,10 @@ signal.signal(signal.SIGINT, handle_shutdown)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("[API] Starting up...")
+
+    update_listener_thread = threading.Thread(target=_listen_for_updates, daemon=True)
+    update_listener_thread.start()
+
     try:
         yield
     finally:
@@ -33,3 +39,8 @@ def health():
         "status": "healthy",
         "kafka_connected": KafkaClient.get_instance().producer is not None
     }
+
+import os
+
+db_path = os.path.abspath('/db/db.sqlite')
+logger.info(f"[DEBUG] Using SQLite DB at {db_path}")

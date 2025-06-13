@@ -3,10 +3,10 @@ import cv2
 import numpy as np
 import time
 import logging
+import os
 import base64
 from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable, KafkaError
-from config import KAFKA_BOOTSTRAP_SERVERS, INFERENCE_TOPIC
 from yolo import YoloNano
 from kafka_producer import send_prediction
 
@@ -47,8 +47,8 @@ class InferenceKafkaConsumer:
             try:
                 logger.info(f"[KafkaConsumer] Attempting to connect to Kafka (attempt {attempt + 1}/{max_retries})")
                 self.consumer = KafkaConsumer(
-                    INFERENCE_TOPIC,
-                    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                    os.getenv('INFERENCE_TOPIC'),
+                    bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="inference-group",
                     auto_offset_reset='earliest',
@@ -121,7 +121,7 @@ class InferenceKafkaConsumer:
                 for msg in self.consumer:
                     if not self.running:
                         break
-                    if msg.topic == INFERENCE_TOPIC:
+                    if msg.topic == os.getenv('INFERENCE_TOPIC'):
                         logger.info(f"[KafkaConsumer] Received message for frame {msg.value.get('frame_index')}")
                         self.handle_message(msg.value)
                     else:

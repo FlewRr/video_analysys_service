@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 class ScenarioInitRequest(BaseModel):
     scenario_id: str
@@ -14,4 +14,4 @@ class ScenarioStatusResponse(BaseModel):
 
 class PredictionResponse(BaseModel):
     scenario_id: str
-    predictions: Optional[dict]
+    predictions: Optional[List[Dict[str, Any]]]

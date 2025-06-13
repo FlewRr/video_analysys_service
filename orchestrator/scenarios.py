@@ -4,17 +4,31 @@ from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
- 
-_SCENARIOS = {}
 
 def create_scenario(scenario_id: str, video_path: str):
-    if scenario_id in _SCENARIOS:
-        raise ValueError("Scenario already exists")
-    _SCENARIOS[scenario_id] = {
-        "state": "init_startup",
-        "video_path": video_path,
-        "predictions": None
-    }
+    session = SessionLocal()
+    try:
+        # Check if scenario already exists
+        existing = session.query(Scenario).get(scenario_id)
+        if existing:
+            raise ValueError("Scenario already exists")
+            
+        # Create new scenario
+        scenario = Scenario(
+            id=scenario_id,
+            state="init_startup",
+            video_path=video_path,
+            predictions=[]
+        )
+        session.add(scenario)
+        session.commit()
+        logger.info(f"[Scenarios] Created new scenario {scenario_id}")
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[Scenarios] Error creating scenario: {str(e)}")
+        raise
+    finally:
+        session.close()
 
 def update_scenario_state(event_payload: dict):
     scenario_id = event_payload.get("scenario_id")
@@ -53,9 +67,45 @@ def update_scenario_state(event_payload: dict):
         session.close()
 
 def set_predictions(scenario_id: str, predictions: dict):
-    if scenario_id not in _SCENARIOS:
-        raise ValueError("Scenario not found")
-    _SCENARIOS[scenario_id]["predictions"] = predictions
+    session = SessionLocal()
+    try:
+        scenario = session.query(Scenario).get(scenario_id)
+        if not scenario:
+            raise ValueError("Scenario not found")
+            
+        # Initialize predictions as a list if it doesn't exist
+        if scenario.predictions is None:
+            scenario.predictions = []
+            
+        # Add new prediction to the list
+        if scenario.predictions is None:
+            predictions_list = []
+        else:
+            predictions_list = scenario.predictions
+
+        predictions_list.append(predictions)
+        scenario.predictions = predictions_list
+
+        scenario.updated_at = datetime.utcnow()
+        session.commit()
+        logger.info(f"[Scenarios] Added new prediction for scenario {scenario_id}")
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[Scenarios] Error setting predictions: {str(e)}")
+        raise
+    finally:
+        session.close()
 
 def get_scenario(scenario_id: str):
-    return _SCENARIOS.get(scenario_id)
+    session = SessionLocal()
+    try:
+        scenario = session.query(Scenario).get(scenario_id)
+        if scenario:
+            return {
+                "state": scenario.state,
+                "video_path": scenario.video_path,
+                "predictions": scenario.predictions or {}
+            }
+        return None
+    finally:
+        session.close()

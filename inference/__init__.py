@@ -1,4 +1,3 @@
-import inference.config
 import inference.yolo
 import inference.kafka_producer
 import inference.kafka_consumer

@@ -1,4 +1,5 @@
-from config import ALLOWED_STATES
+import os
+import json
 
 # Allowed transitions (updated with your correction)
 TRANSITIONS = {
@@ -9,6 +10,8 @@ TRANSITIONS = {
     "in_shutdown_processing": ["inactive"],
     "inactive": []
 }
+
+ALLOWED_STATES = json.loads(os.getenv('ALLOWED_STATES'))
 
 def can_transition(current_state: str, new_state: str) -> bool:
     if current_state not in ALLOWED_STATES or new_state not in ALLOWED_STATES:

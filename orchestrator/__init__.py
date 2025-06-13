@@ -1,3 +1,2 @@
-import orchestrator.config
 import orchestrator.kafka_consumer
 import orchestrator.kafka_producer

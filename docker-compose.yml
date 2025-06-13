@@ -26,24 +26,48 @@ services:
     build: ./api
     ports:
       - "8000:8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SCENARIO_TOPIC: scenario_topic
+      PREDICTION_TOPIC: prediction_topic
+      ALLOWED_STATES: '["init_startup","in_startup_processing","active","init_shutdown","in_shutdown_processing","inactive"]'
     depends_on:
-      - kafka
+      kafka:
+        condition: service_started
     networks:
       - mynetwork
+    volumes:
+      - ./db:/db
+    user: "1000:1000"
 
   orchestrator:
     build: ./orchestrator
     ports:
       - "8001:8001"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SCENARIO_TOPIC: scenario_topic
+      RUNNER_TOPIC: runner_topic
+      PREDICTION_TOPIC: prediction_topic
+      ALLOWED_STATES: '["init_startup","in_startup_processing","active","init_shutdown","in_shutdown_processing","inactive"]'
     depends_on:
-      - kafka
+      kafka:
+        condition: service_started
     networks:
       - mynetwork
+    volumes:
+      - ./db:/db
+    user: "1000:1000"
 
   runner:
     build: ./runner
     ports:
       - "8002:8002"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      RUNNER_TOPIC: runner_topic
+      PREDICTION_TOPIC: prediction_topic
+      INFERENCE_TOPIC: inference_topic
     depends_on:
       - kafka
     networks:
@@ -55,6 +79,11 @@ services:
     build: ./inference
     ports:
       - "8003:8003"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      RUNNER_TOPIC: runner_topic
+      INFERENCE_TOPIC: inference_topic
+      PREDICTION_TOPIC: prediction_topic
     depends_on:
       - kafka
     networks:

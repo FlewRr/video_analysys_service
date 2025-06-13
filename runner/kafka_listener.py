@@ -1,9 +1,9 @@
 import json
 import time
 import logging
+import os
 from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable, KafkaError
-from config import KAFKA_BOOTSTRAP_SERVERS, RUNNER_TOPIC
 from inference_client import InferenceClient
 
 logger = logging.getLogger(__name__)
@@ -32,14 +32,12 @@ class KafkaListener:
         for attempt in range(max_retries):
             try:
                 self.consumer = KafkaConsumer(
-                    RUNNER_TOPIC,
-                    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                    os.getenv('RUNNER_TOPIC'),
+                    bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="runner-group",
                     auto_offset_reset='earliest',
-                    enable_auto_commit=True,
-                    session_timeout_ms=30000,
-                    heartbeat_interval_ms=10000
+                    enable_auto_commit=True
                 )
                 logger.info("[KafkaListener] Successfully connected to Kafka")
                 return

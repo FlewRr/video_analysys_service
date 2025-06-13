@@ -1,9 +1,9 @@
 import json
 import time
 import logging
+import os
 from kafka import KafkaProducer as KafkaClient
 from kafka.errors import NoBrokersAvailable, KafkaError
-from config import KAFKA_BOOTSTRAP_SERVERS, PREDICTION_TOPIC
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,9 @@ class InferenceKafkaProducer:
         
         for attempt in range(max_retries):
             try:
-                logger.info(f"[Producer] Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS} (attempt {attempt + 1}/{max_retries})")
+                logger.info(f"[Producer] Connecting to Kafka at {os.getenv('KAFKA_BOOTSTRAP_SERVERS')} (attempt {attempt + 1}/{max_retries})")
                 self.producer = KafkaClient(
-                    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                    bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
                     acks='all',
                     retries=3
@@ -54,7 +54,7 @@ class InferenceKafkaProducer:
                 "scenario_id": scenario_id,
                 "predictions": predictions
             }
-            future = self.producer.send(PREDICTION_TOPIC, message)
+            future = self.producer.send(os.getenv('PREDICTION_TOPIC'), message)
             future.get(timeout=10)  # Wait for the message to be delivered
             logger.info(f"[Producer] Successfully sent prediction for scenario {scenario_id}")
         except Exception as e:

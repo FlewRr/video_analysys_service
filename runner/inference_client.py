@@ -4,9 +4,9 @@ import cv2
 import numpy as np
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable, KafkaError
-from config import KAFKA_BOOTSTRAP_SERVERS, INFERENCE_TOPIC
 import time
 import base64
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,9 @@ class InferenceClient:
         
         for attempt in range(max_retries):
             try:
-                logger.info(f"[InferenceClient] Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS} (attempt {attempt + 1}/{max_retries})")
+                logger.info(f"[InferenceClient] Connecting to Kafka at {os.getenv('KAFKA_BOOTSTRAP_SERVERS')} (attempt {attempt + 1}/{max_retries})")
                 self.producer = KafkaProducer(
-                    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                    bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
                     acks='all',
                     retries=3
@@ -112,7 +112,7 @@ class InferenceClient:
                         "frame_shape": processed_frame.shape
                     }
                     
-                    future = self.producer.send(INFERENCE_TOPIC, message)
+                    future = self.producer.send(os.getenv('INFERENCE_TOPIC'), message)
                     future.get(timeout=10)  # Wait for the message to be delivered
                     
                     processed_count += 1

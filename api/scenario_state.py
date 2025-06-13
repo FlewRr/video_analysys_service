@@ -1,17 +1,83 @@
-# Simple in-memory scenario state store
-
 import json
 import logging
+import os
 from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable, KafkaError
-from config import KAFKA_BOOTSTRAP_SERVERS, SCENARIO_TOPIC, PREDICTION_TOPIC
-import threading
 import time
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# In-memory state store
-_SCENARIOS = {}
+# Connect to the existing database
+engine = create_engine('sqlite:////db/db.sqlite')
+Base = declarative_base()
+
+class Scenario(Base):
+    __tablename__ = "scenarios"
+
+    id = Column(String, primary_key=True)
+    state = Column(String, nullable=False)
+    video_path = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    predictions = Column(JSON)
+
+# Create tables if they don't exist
+logger.info("[API] Creating database tables if they don't exist...")
+Base.metadata.create_all(engine)
+logger.info("[API] Database tables created successfully")
+
+SessionLocal = sessionmaker(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def create_scenario(scenario_id: str, video_path: str):
+    db = SessionLocal()
+    try:
+        # Check if scenario already exists
+        existing = db.query(Scenario).filter(Scenario.id == scenario_id).first()
+        if existing:
+            raise ValueError(f"Scenario with ID {scenario_id} already exists")
+            
+        scenario = Scenario(
+            id=scenario_id,
+            state="init_startup",
+            video_path=video_path,
+            predictions=[]
+        )
+        db.add(scenario)
+        db.commit()
+        return scenario
+    except Exception as e:
+        logger.error(f"[API] Error creating scenario: {str(e)}")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+def get_scenario(scenario_id: str):
+    db = SessionLocal()
+    try:
+        scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
+        if scenario:
+            logger.info(f"[API] Reading scenario {scenario_id} from DB. Current predictions: {scenario.predictions}")
+            return {
+                "state": scenario.state,
+                "video_path": scenario.video_path,
+                "predictions": scenario.predictions or []
+            }
+        return None
+    finally:
+        db.close()
+
 
 def _connect_consumer():
     max_retries = 30
@@ -20,9 +86,9 @@ def _connect_consumer():
     for attempt in range(max_retries):
         try:
             consumer = KafkaConsumer(
-                SCENARIO_TOPIC,
-                PREDICTION_TOPIC,
-                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                os.getenv('SCENARIO_TOPIC'),
+                os.getenv('PREDICTION_TOPIC'),
+                bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 group_id="api-group",
                 auto_offset_reset='earliest',
@@ -45,62 +111,26 @@ def _listen_for_updates():
                 message = msg.value
                 topic = msg.topic
 
-                if topic == SCENARIO_TOPIC and message.get("type") == "state_change":
+                if topic == os.getenv('SCENARIO_TOPIC') and message.get("type") == "state_change":
                     scenario_id = message.get("scenario_id")
                     new_state = message.get("new_state")
                     if scenario_id and new_state:
-                        if scenario_id not in _SCENARIOS:
-                            logger.warning(f"[API] Received state change for unknown scenario {scenario_id}")
-                            continue
-                        _SCENARIOS[scenario_id]["state"] = new_state
-                        logger.info(f"[API] Updated scenario {scenario_id} state to {new_state}")
-                
-                elif topic == PREDICTION_TOPIC:
-                    scenario_id = message.get("scenario_id")
-                    prediction_data = message.get("predictions")
-                    if scenario_id and prediction_data:
-                        if scenario_id not in _SCENARIOS:
-                            logger.warning(f"[API] Received predictions for unknown scenario {scenario_id}")
-                            continue
-                        
-                        # Initialize predictions dictionary if it doesn't exist
-                        if _SCENARIOS[scenario_id]["predictions"] is None:
-                            _SCENARIOS[scenario_id]["predictions"] = {}
-                        
-                        # Add or update prediction for this frame
-                        frame_index = prediction_data.get("frame_index")
-                        predictions = prediction_data.get("predictions")
-                        if frame_index is not None and predictions is not None:
-                            _SCENARIOS[scenario_id]["predictions"][str(frame_index)] = predictions
-                            logger.info(f"[API] Updated predictions for scenario {scenario_id} frame {frame_index}")
-
+                        db = SessionLocal()
+                        try:
+                            scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
+                            if scenario:
+                                scenario.state = new_state
+                                scenario.updated_at = datetime.utcnow()
+                                db.commit()
+                                logger.info(f"[API] Updated scenario {scenario_id} state to {new_state}")
+                            else:
+                                logger.warning(f"[API] Received state change for unknown scenario {scenario_id}")
+                        except Exception as e:
+                            logger.error(f"[API] Error updating scenario state: {str(e)}")
+                            db.rollback()
+                        finally:
+                            db.close()
         except Exception as e:
             logger.error(f"[API] Error in update listener: {str(e)}")
             time.sleep(5)
             consumer = _connect_consumer()
-
-# Start the update listener in a background thread
-update_listener_thread = threading.Thread(target=_listen_for_updates, daemon=True)
-update_listener_thread.start()
-
-def create_scenario(scenario_id: str, video_path: str):
-    if scenario_id in _SCENARIOS:
-        raise ValueError("Scenario already exists")
-    _SCENARIOS[scenario_id] = {
-        "state": "init_startup",
-        "video_path": video_path,
-        "predictions": {}
-    }
-
-def update_scenario_state(scenario_id: str, new_state: str):
-    if scenario_id not in _SCENARIOS:
-        raise KeyError("Scenario not found")
-    _SCENARIOS[scenario_id]["state"] = new_state
-
-def get_scenario(scenario_id: str):
-    return _SCENARIOS.get(scenario_id)
-
-def set_predictions(scenario_id: str, predictions):
-    if scenario_id not in _SCENARIOS:
-        raise KeyError("Scenario not found")
-    _SCENARIOS[scenario_id]["predictions"] = predictions
