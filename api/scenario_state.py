@@ -68,7 +68,6 @@ def get_scenario(scenario_id: str):
     try:
         scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
         if scenario:
-            logger.info(f"[API] Reading scenario {scenario_id} from DB. Current predictions: {scenario.predictions}")
             return {
                 "state": scenario.state,
                 "video_path": scenario.video_path,

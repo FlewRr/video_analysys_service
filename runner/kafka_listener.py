@@ -5,6 +5,7 @@ import os
 from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable, KafkaError
 from inference_client import InferenceClient
+from kafka_producer import send_scenario_message
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ class KafkaListener:
             cls._instance = super(KafkaListener, cls).__new__(cls)
             cls._instance.consumer = None
             cls._instance.inference_client = None
+            cls._instance.processed_frames_count = {}  # Track number of processed frames per scenario
         return cls._instance
 
     def __init__(self):
@@ -33,6 +35,7 @@ class KafkaListener:
             try:
                 self.consumer = KafkaConsumer(
                     os.getenv('RUNNER_TOPIC'),
+                    os.getenv('PREDICTION_TOPIC'),
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="runner-group",
@@ -65,6 +68,8 @@ class KafkaListener:
 
                 logger.info(f"[Runner] Starting processing for video: {video_path}")
                 try:
+                    # Initialize frame counter for this scenario
+                    self.processed_frames_count[scenario_id] = 0
                     self.inference_client.send_to_inference(scenario_id, video_path)
                     logger.info(f"[Runner] Successfully sent video for inference: {video_path}")
                 except Exception as e:
@@ -73,7 +78,30 @@ class KafkaListener:
 
             elif msg_type == "shutdown":
                 logger.info(f"[Runner] Received shutdown command for scenario: {scenario_id}")
-                # Add any cleanup logic here if needed
+                # Clean up tracking
+                if scenario_id in self.processed_frames_count:
+                    del self.processed_frames_count[scenario_id]
+
+            elif "predictions" in message:  # Handle prediction message
+                predictions = message.get("predictions", {})
+                frame_index = predictions.get("frame_index")
+                
+                if frame_index is not None:
+                    # Increment processed frames counter
+                    if scenario_id not in self.processed_frames_count:
+                        self.processed_frames_count[scenario_id] = 0
+                    self.processed_frames_count[scenario_id] += 1
+                    
+                    # Check if all frames are processed
+                    total_frames = self.inference_client.get_total_frames(scenario_id)
+                    if total_frames and self.processed_frames_count[scenario_id] >= total_frames:
+                        logger.info(f"[Runner] All frames processed for scenario {scenario_id}, sending shutdown message")
+                        send_scenario_message({
+                            "type": "shutdown",
+                            "scenario_id": scenario_id
+                        })
+                        # Clean up tracking
+                        del self.processed_frames_count[scenario_id]
 
         except Exception as e:
             logger.error(f"[Runner] Error handling message: {str(e)}")

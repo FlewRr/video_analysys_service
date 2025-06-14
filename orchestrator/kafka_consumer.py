@@ -8,52 +8,18 @@ import sqlite3
 from storage import SessionLocal, get_scenario, update_scenario_state, update_scenario_predictions
 from state_machine import can_transition
 from kafka_producer import send_runner_command
-from outbox import Outbox
 from datetime import datetime
 from storage import Scenario
+from outbox import create_outbox_event
 
 logger = logging.getLogger(__name__)
 
-def log_database_info():
-    try:
-        # Get database file info
-        db_path = '/db'
-        if os.path.exists(db_path):
-            size = os.path.getsize(db_path)
-            logger.info(f"[KafkaListener] Database file exists at {db_path}, size: {size} bytes")
-            
-            # Check if we can connect to the database
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Get list of tables
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = cursor.fetchall()
-            logger.info(f"[KafkaListener] Database tables: {[table[0] for table in tables]}")
-            
-            # Get count of scenarios
-            cursor.execute("SELECT COUNT(*) FROM scenarios;")
-            count = cursor.fetchone()[0]
-            logger.info(f"[KafkaListener] Number of scenarios in database: {count}")
-            
-            # Get all scenario IDs
-            cursor.execute("SELECT id FROM scenarios;")
-            scenario_ids = cursor.fetchall()
-            logger.info(f"[KafkaListener] Scenario IDs in database: {[id[0] for id in scenario_ids]}")
-            
-            conn.close()
-        else:
-            logger.error(f"[KafkaListener] Database file does not exist at {db_path}")
-    except Exception as e:
-        logger.error(f"[KafkaListener] Error checking database info: {str(e)}")
 
 class KafkaListener:
     def __init__(self):
         self.consumer = None
         self._connect_consumer()
         self.running = True
-        # Log database info on startup
-        log_database_info()
 
     def _connect_consumer(self):
         max_retries = 30  # Increased retries for Docker environment
@@ -90,9 +56,6 @@ class KafkaListener:
             if not scenario_id:
                 logger.error("[KafkaListener] Received message without scenario_id")
                 return
-
-            # Log database info before querying
-            log_database_info()
             
             scenario = get_scenario(session, scenario_id)
             if not scenario:
@@ -100,17 +63,84 @@ class KafkaListener:
                 return
 
             if message_type == "start":
-                # Handle scenario start
                 if scenario.state == "init_startup":
-                    # Send command to runner
+                    update_scenario_state(session, scenario_id, "in_startup_processing")
+                    session.commit()
+
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": "in_startup_processing",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+
                     send_runner_command({
                         "type": "start",
                         "scenario_id": scenario_id,
                         "video_path": scenario.video_path
                     })
-                    # Update state
-                    update_scenario_state(session, scenario_id, "in_startup_processing")
+
+                    update_scenario_state(session, scenario_id, "active")
+                    session.commit()
+
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": "active",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+
                     logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to in_startup_processing")
+
+            elif message_type == "shutdown":
+                # Handle scenario shutdown
+                if scenario.state == "active":
+                    update_scenario_state(session, scenario_id, "init_shutdown")
+                    session.commit()
+                    # Create outbox event for state change
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": "init_shutdown",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+
+                    update_scenario_state(session, scenario_id, "in_shutdown_processing")
+                    session.commit()
+                    # Create outbox event for state change
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": "in_shutdown_processing",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+
+                    send_runner_command({
+                        "type": "shutdown",
+                        "scenario_id": scenario_id
+                    })
+
+                    update_scenario_state(session, scenario_id, "inactive")
+                    session.commit()
+                    # Create outbox event for state change
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": "inactive",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+
+                    logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to inactive")
 
             elif message_type == "state_change_request":
                 new_state = message.get("new_state")
@@ -122,8 +152,16 @@ class KafkaListener:
                 if can_transition(scenario.state, new_state):
                     # Update state in database
                     update_scenario_state(session, scenario_id, new_state)
-                    # Notify other services about state change
-                    Outbox.get_instance().send_scenario_update(scenario_id, new_state)
+                    session.commit()
+                    # Create outbox event for state change
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": new_state,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
                     logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to {new_state}")
                 else:
                     logger.warning(f"[KafkaListener] Invalid state transition from {scenario.state} to {new_state}")
@@ -138,47 +176,41 @@ class KafkaListener:
         session = SessionLocal()
         try:
             scenario_id = message.get("scenario_id")
-            predictions = message.get("predictions")
+            predictions = message.get("predictions", {})
 
-            if not scenario_id or not predictions:
-                logger.error("[KafkaListener] Invalid prediction message")
+            if not scenario_id:
+                logger.error("[KafkaListener] Received prediction without scenario_id")
                 return
 
-            logger.info(f"[KafkaListener] Received prediction for {scenario_id}: {predictions}")
-            
             scenario = get_scenario(session, scenario_id)
             if not scenario:
                 logger.error(f"[KafkaListener] Scenario {scenario_id} not found")
                 return
 
-            logger.info(f"[KafkaListener] Before update - Current predictions for {scenario_id}: {scenario.predictions}")
-
-            try:
-                # Initialize predictions as a list if it doesn't exist
-                if scenario.predictions is None:
-                    scenario.predictions = []
-                    logger.info(f"[KafkaListener] Initialized empty predictions list for {scenario_id}")
-                
-                # Add new prediction to the list
-                scenario.predictions.append(predictions)
-                scenario.updated_at = datetime.utcnow()
-                
-                # Explicitly update the predictions column
-                session.query(Scenario).filter(Scenario.id == scenario_id).update({
-                    "predictions": scenario.predictions,
-                    "updated_at": scenario.updated_at
-                })
-                
-                session.commit()
-                logger.info(f"[KafkaListener] Successfully committed prediction update for {scenario_id}")
-                
-                # Verify the update
-                session.refresh(scenario)
-                logger.info(f"[KafkaListener] After update - Verified predictions for {scenario_id}: {scenario.predictions}")
-            except Exception as e:
-                logger.error(f"[KafkaListener] Error updating predictions in database: {str(e)}")
-                session.rollback()
-                raise
+            # Initialize predictions list if it doesn't exist
+            if scenario.predictions is None:
+                scenario.predictions = []
+                logger.info(f"[KafkaListener] Initialized empty predictions list for {scenario_id}")
+            
+            # Add new prediction to the list
+            scenario.predictions.append(predictions)
+            scenario.updated_at = datetime.utcnow()
+            
+            # Explicitly update the predictions column
+            session.query(Scenario).filter(Scenario.id == scenario_id).update({
+                "predictions": scenario.predictions,
+                "updated_at": scenario.updated_at
+            })
+            
+            session.commit()
+            logger.info(f"[KafkaListener] Successfully committed prediction update for {scenario_id}")
+            
+            # Verify the update
+            session.refresh(scenario)
+        except Exception as e:
+            logger.error(f"[KafkaListener] Error updating predictions in database: {str(e)}")
+            session.rollback()
+            raise
 
         except Exception as e:
             logger.error(f"[KafkaListener] Error handling prediction message: {str(e)}")

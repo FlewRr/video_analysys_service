@@ -17,6 +17,7 @@ class InferenceClient:
         if cls._instance is None:
             cls._instance = super(InferenceClient, cls).__new__(cls)
             cls._instance.producer = None
+            cls._instance.total_frames = {}  # Track total frames per scenario
         return cls._instance
 
     def __init__(self):
@@ -67,11 +68,14 @@ class InferenceClient:
                 raise ValueError("Failed to encode frame as JPEG")
             # Convert to base64 string
             compressed = base64.b64encode(buffer).decode('utf-8')
-            logger.info(f"[InferenceClient] Successfully compressed frame with shape {frame.shape}")
             return compressed
         except Exception as e:
             logger.error(f"[InferenceClient] Error compressing frame: {str(e)}")
             raise
+
+    def get_total_frames(self, scenario_id: str) -> int:
+        """Get total number of frames for a scenario"""
+        return self.total_frames.get(scenario_id)
 
     def send_to_inference(self, scenario_id: str, video_path: str):
         """Send video frames to inference service"""
@@ -85,6 +89,9 @@ class InferenceClient:
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             logger.info(f"[InferenceClient] Video FPS: {fps}, Total frames: {frame_count}")
+
+            # Store total frames for this scenario
+            self.total_frames[scenario_id] = frame_count // 24  # Since we process every 24th frame
 
             # Sample every 24th frame (roughly 1 frame per second for 24fps video)
             frame_interval = 24
