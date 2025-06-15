@@ -4,6 +4,7 @@ from kafka_consumer import KafkaListener
 from kafka_producer import OrchestratorKafkaProducer
 from outbox import outbox_poller_loop
 from storage import Base, engine  # Import storage to ensure tables are created
+from heartbeat import heartbeat_monitor
 import threading
 import logging
 import signal
@@ -23,6 +24,7 @@ def handle_shutdown(signum, frame):
     logger.info("[Orchestrator] Received shutdown signal")
     if kafka_thread and kafka_thread.is_alive():
         kafka_thread.join(timeout=5)
+    heartbeat_monitor.stop()
     OrchestratorKafkaProducer.get_instance().close()
 
 signal.signal(signal.SIGTERM, handle_shutdown)
@@ -44,6 +46,10 @@ async def lifespan(app: FastAPI):
     outbox_thread = threading.Thread(target=outbox_poller_loop, daemon=True)
     outbox_thread.start()
     logger.info("[Orchestrator] Outbox poller thread started")
+
+    # Start heartbeat monitor
+    heartbeat_monitor.start()
+    logger.info("[Orchestrator] Heartbeat monitor started")
     
     try:
         yield
@@ -51,6 +57,7 @@ async def lifespan(app: FastAPI):
         logger.info("[Orchestrator] Shutting down...")
         if kafka_thread and kafka_thread.is_alive():
             kafka_thread.join(timeout=5)
+        heartbeat_monitor.stop()
         OrchestratorKafkaProducer.get_instance().close()
 
 app = FastAPI(title="Orchestrator", lifespan=lifespan)
@@ -60,7 +67,8 @@ def health():
     return {
         "status": "healthy",
         "kafka_thread_alive": kafka_thread.is_alive() if kafka_thread else False,
-        "outbox_thread_alive": outbox_thread.is_alive() if outbox_thread else False
+        "outbox_thread_alive": outbox_thread.is_alive() if outbox_thread else False,
+        "heartbeat_monitor_alive": heartbeat_monitor.monitor_thread.is_alive() if heartbeat_monitor.monitor_thread else False
     }
 
 

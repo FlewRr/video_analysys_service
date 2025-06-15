@@ -135,6 +135,29 @@ class InferenceClient:
             logger.error(f"[InferenceClient] Error sending to inference: {str(e)}")
             raise
 
+    def stop_processing(self, scenario_id: str):
+        """Send stop processing command to inference service"""
+        try:
+            if not self.producer:
+                logger.error("[InferenceClient] Producer not initialized")
+                self._connect_producer()
+
+            message = {
+                "type": "stop_processing",
+                "scenario_id": scenario_id
+            }
+            
+            self.producer.send(os.getenv('INFERENCE_TOPIC'), message)
+            self.producer.flush()
+            logger.info(f"[InferenceClient] Sent stop processing command for scenario: {scenario_id}")
+            
+            # Clean up tracking
+            if scenario_id in self.total_frames:
+                del self.total_frames[scenario_id]
+        except Exception as e:
+            logger.error(f"[InferenceClient] Error sending stop processing command: {str(e)}")
+            raise
+
     def close(self):
         if self.producer:
             try:

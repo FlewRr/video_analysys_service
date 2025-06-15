@@ -9,6 +9,7 @@ from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable, KafkaError
 from yolo import YoloNano
 from kafka_producer import send_prediction
+from heartbeat import HeartbeatSender
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class InferenceKafkaConsumer:
             cls._instance = super(InferenceKafkaConsumer, cls).__new__(cls)
             cls._instance.consumer = None
             cls._instance.yolo = None
+            cls._instance.heartbeat_senders = {}  # Track heartbeat senders per scenario
         return cls._instance
 
     def __init__(self):
@@ -29,6 +31,7 @@ class InferenceKafkaConsumer:
             logger.info("[KafkaConsumer] Initializing inference consumer...")
             self._connect_consumer()
             self._initialize_yolo()
+            self.active_scenarios = set()
 
     def _initialize_yolo(self):
         try:
@@ -83,35 +86,80 @@ class InferenceKafkaConsumer:
 
     def handle_message(self, message: dict):
         try:
+            msg_type = message.get("type")
             scenario_id = message.get("scenario_id")
-            frame_index = message.get("frame_index")
-            compressed_frame = message.get("frame")
-            frame_shape = message.get("frame_shape")
 
-            if not all([scenario_id, frame_index is not None, compressed_frame, frame_shape]):
-                logger.error(f"[Inference] Received invalid message format: {message}")
+            if not scenario_id:
+                logger.error("[Inference] Received message without scenario_id")
                 return
 
-            logger.info(f"[Inference] Processing frame {frame_index} for scenario: {scenario_id}")
-            try:
-                frame = self.decompress_frame(compressed_frame, frame_shape)
-                
-                predictions = self.yolo.predict(frame)
-                logger.info(f"[Inference] YOLO found {len(predictions)} objects in frame {frame_index}")
-                
-                logger.info(f"[Inference] Sending prediction for frame {frame_index}")
-                send_prediction(scenario_id, {
-                    "frame_index": frame_index,
-                    "predictions": predictions
-                })
-                logger.info(f"[Inference] Successfully processed and sent prediction for frame {frame_index}")
+            if msg_type == "stop_processing":
+                logger.info(f"[Inference] Received stop processing command for scenario: {scenario_id}")
+                # Stop heartbeat sender
+                if scenario_id in self.heartbeat_senders:
+                    self.heartbeat_senders[scenario_id].stop()
+                    del self.heartbeat_senders[scenario_id]
 
+                # Stop processing this scenario
+                if scenario_id in self.active_scenarios:
+                    self.active_scenarios.remove(scenario_id)
+                    logger.info(f"[Inference] Stopped processing scenario: {scenario_id}")
+                return
+
+            # Handle frame message
+            frame = message.get("frame")
+            frame_shape = message.get("frame_shape")
+            frame_index = message.get("frame_index")
+
+            if not all([frame, frame_shape, frame_index]):
+                logger.error("[Inference] Received message without required frame data")
+                return
+
+            # Check if scenario is already being processed
+            if scenario_id not in self.active_scenarios:
+                logger.info(f"[Inference] Starting processing for scenario: {scenario_id}")
+                # Start heartbeat sender for this scenario
+                heartbeat_sender = HeartbeatSender(service_id="inference")
+                heartbeat_sender.start_heartbeat(scenario_id)
+                self.heartbeat_senders[scenario_id] = heartbeat_sender
+                self.active_scenarios.add(scenario_id)
+
+            try:
+                # Decompress and process frame
+                decompressed_frame = self.decompress_frame(frame, frame_shape)
+                
+                # Process frame with YOLO model
+                results = self.yolo.predict(decompressed_frame)
+                
+                # Send predictions
+                send_prediction(scenario_id, {
+                    "scenario_id": scenario_id,
+                    "frame_index": frame_index,
+                    "predictions": results
+                })
+                
             except Exception as e:
                 logger.error(f"[Inference] Error processing frame: {str(e)}")
+                # Stop heartbeat sender
+                if scenario_id in self.heartbeat_senders:
+                    self.heartbeat_senders[scenario_id].stop()
+                    del self.heartbeat_senders[scenario_id]
+
+                # Make sure to remove scenario from active scenarios in case of error
+                if scenario_id in self.active_scenarios:
+                    self.active_scenarios.remove(scenario_id)
                 raise
 
         except Exception as e:
             logger.error(f"[Inference] Error handling message: {str(e)}")
+            # Stop heartbeat sender
+            if scenario_id in self.heartbeat_senders:
+                self.heartbeat_senders[scenario_id].stop()
+                del self.heartbeat_senders[scenario_id]
+
+            # Make sure to remove scenario from active scenarios in case of error
+            if scenario_id in self.active_scenarios:
+                self.active_scenarios.remove(scenario_id)
             raise
 
     def listen(self):
@@ -135,6 +183,14 @@ class InferenceKafkaConsumer:
 
     def stop(self):
         self.running = False
+        # Stop all heartbeat senders
+        for scenario_id, sender in self.heartbeat_senders.items():
+            try:
+                sender.stop()
+            except Exception as e:
+                logger.error(f"[KafkaConsumer] Error stopping heartbeat sender for scenario {scenario_id}: {str(e)}")
+        self.heartbeat_senders.clear()
+
         if self.consumer:
             try:
                 self.consumer.close()

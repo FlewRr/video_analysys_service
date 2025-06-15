@@ -49,6 +49,7 @@ services:
       SCENARIO_TOPIC: scenario_topic
       RUNNER_TOPIC: runner_topic
       PREDICTION_TOPIC: prediction_topic
+      HEARTBEAT_TOPIC: heartbeat_topic
       ALLOWED_STATES: '["init_startup","in_startup_processing","active","init_shutdown","in_shutdown_processing","inactive"]'
     depends_on:
       kafka:
@@ -69,6 +70,7 @@ services:
       SCENARIO_TOPIC: scenario_topic
       PREDICTION_TOPIC: prediction_topic
       INFERENCE_TOPIC: inference_topic
+      HEARTBEAT_TOPIC: heartbeat_topic
     depends_on:
       kafka:
         condition: service_started
@@ -86,6 +88,7 @@ services:
       RUNNER_TOPIC: runner_topic
       INFERENCE_TOPIC: inference_topic
       PREDICTION_TOPIC: prediction_topic
+      HEARTBEAT_TOPIC: heartbeat_topic
     depends_on:
       kafka:
         condition: service_started

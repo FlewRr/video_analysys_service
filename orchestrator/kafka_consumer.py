@@ -30,6 +30,7 @@ class KafkaListener:
                 self.consumer = KafkaConsumer(
                     os.getenv('SCENARIO_TOPIC'),
                     os.getenv('PREDICTION_TOPIC'),
+                    os.getenv('HEARTBEAT_TOPIC'),
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="orchestrator-group",
@@ -56,14 +57,52 @@ class KafkaListener:
             if not scenario_id:
                 logger.error("[KafkaListener] Received message without scenario_id")
                 return
-            
+
             scenario = get_scenario(session, scenario_id)
             if not scenario:
                 logger.error(f"[KafkaListener] Scenario {scenario_id} not found")
                 return
 
-            if message_type == "start":
+            if message_type == "error":
+                logger.error(f"[KafkaListener] Received error for scenario {scenario_id}: {message.get('error')}")
+                # Transition directly to in_shutdown_processing state
+                if scenario.state in ["active", "in_startup_processing"]:
+                    update_scenario_state(session, scenario_id, "in_shutdown_processing")
+                    session.commit()
+                    # Create outbox event for state change
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": "in_shutdown_processing",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to in_shutdown_processing due to error")
+
+                    # Send shutdown command to stop all services
+                    send_runner_command({
+                        "type": "shutdown",
+                        "scenario_id": scenario_id
+                    })
+
+                    # Mark as inactive after shutdown
+                    update_scenario_state(session, scenario_id, "inactive")
+                    session.commit()
+                    create_outbox_event(
+                        event_type='scenario_state_changed',
+                        payload={
+                            "scenario_id": scenario_id,
+                            "new_state": "inactive",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to inactive after error")
+
+            elif message_type == "start":
+                logger.info(f"[KafkaListener] Received start message for scenario {scenario_id} in state {scenario.state}")
                 if scenario.state == "init_startup":
+                    logger.info(f"[KafkaListener] Transitioning scenario {scenario_id} from {scenario.state} to in_startup_processing")
                     update_scenario_state(session, scenario_id, "in_startup_processing")
                     session.commit()
 
@@ -76,12 +115,14 @@ class KafkaListener:
                         }
                     )
 
+                    logger.info(f"[KafkaListener] Sending start command to runner for scenario {scenario_id}")
                     send_runner_command({
                         "type": "start",
                         "scenario_id": scenario_id,
                         "video_path": scenario.video_path
                     })
 
+                    logger.info(f"[KafkaListener] Transitioning scenario {scenario_id} from in_startup_processing to active")
                     update_scenario_state(session, scenario_id, "active")
                     session.commit()
 
@@ -94,7 +135,9 @@ class KafkaListener:
                         }
                     )
 
-                    logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to in_startup_processing")
+                    logger.info(f"[KafkaListener] Successfully updated scenario {scenario_id} state to active")
+                else:
+                    logger.warning(f"[KafkaListener] Received start message for scenario {scenario_id} in unexpected state {scenario.state}")
 
             elif message_type == "shutdown":
                 # Handle scenario shutdown
@@ -147,7 +190,7 @@ class KafkaListener:
                 if not new_state:
                     logger.error("[KafkaListener] State change request without new_state")
                     return
-
+                
                 # Check if state transition is allowed
                 if can_transition(scenario.state, new_state):
                     # Update state in database
@@ -218,6 +261,23 @@ class KafkaListener:
         finally:
             session.close()
 
+    def handle_heartbeat_message(self, message):
+        """Handle heartbeat messages from services"""
+        try:
+            scenario_id = message.get("scenario_id")
+            service_id = message.get("service_id")
+            
+            if not scenario_id or not service_id:
+                logger.error("[KafkaListener] Received heartbeat message without scenario_id or service_id")
+                return
+            
+            logger.info(f"[KafkaListener] Received heartbeat message: {message}")
+            from heartbeat import heartbeat_monitor
+            heartbeat_monitor.update_heartbeat(scenario_id, service_id)
+            
+        except Exception as e:
+            logger.error(f"[KafkaListener] Error handling heartbeat message: {str(e)}")
+
     def listen(self):
         logger.info("[KafkaListener] Starting to listen for messages")
         while self.running:
@@ -229,10 +289,16 @@ class KafkaListener:
                     topic = msg.topic
                     message = msg.value
 
+                    logger.info(f"[KafkaListener] Received message on topic {topic}: {message}")
+
                     if topic == os.getenv('SCENARIO_TOPIC'):
                         self.handle_scenario_message(message)
                     elif topic == os.getenv('PREDICTION_TOPIC'):
                         self.handle_prediction_message(message)
+                    elif topic == os.getenv('HEARTBEAT_TOPIC'):
+                        self.handle_heartbeat_message(message)
+                    else:
+                        logger.warning(f"[KafkaListener] Received message from unknown topic: {topic}")
 
             except Exception as e:
                 logger.error(f"[KafkaListener] Error in message loop: {str(e)}")
