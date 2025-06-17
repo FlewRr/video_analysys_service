@@ -58,11 +58,12 @@ class KafkaListener:
             try:
                 self.consumer = KafkaConsumer(
                     os.getenv('RUNNER_TOPIC'),
+                    os.getenv('SCENARIO_TOPIC'),  # Add SCENARIO_TOPIC to listen for shutdown messages
                     os.getenv('PREDICTION_TOPIC'),
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="runner-group",
-                    auto_offset_reset='earliest',
+                    auto_offset_reset='latest',
                     enable_auto_commit=True,
                     session_timeout_ms=30000,
                     heartbeat_interval_ms=10000,
@@ -183,6 +184,7 @@ class KafkaListener:
                     if not self.running:
                         break
                     try:
+                        logger.info(f"[RUNNER] GOT MESSAGE: {msg.value}")
                         message = msg.value
                         self.handle_message(message)
                         # Commit offset after successful processing

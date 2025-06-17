@@ -89,6 +89,7 @@ services:
       INFERENCE_TOPIC: inference_topic
       PREDICTION_TOPIC: prediction_topic
       HEARTBEAT_TOPIC: heartbeat_topic
+      SCENARIO_TOPIC: scenario_topic
     depends_on:
       kafka:
         condition: service_started

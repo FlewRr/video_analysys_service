@@ -22,6 +22,7 @@ class InferenceKafkaConsumer:
             cls._instance.consumer = None
             cls._instance.yolo = None
             cls._instance.heartbeat_senders = {}  # Track heartbeat senders per scenario
+            
         return cls._instance
 
     def __init__(self):
@@ -51,10 +52,11 @@ class InferenceKafkaConsumer:
                 logger.info(f"[KafkaConsumer] Attempting to connect to Kafka (attempt {attempt + 1}/{max_retries})")
                 self.consumer = KafkaConsumer(
                     os.getenv('INFERENCE_TOPIC'),
+                    os.getenv('SCENARIO_TOPIC'),  # Add SCENARIO_TOPIC to listen for stop_processing messages
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="inference-group",
-                    auto_offset_reset='earliest',
+                    auto_offset_reset='latest',
                     enable_auto_commit=True,
                     session_timeout_ms=30000,
                     heartbeat_interval_ms=10000
@@ -96,6 +98,7 @@ class InferenceKafkaConsumer:
             if msg_type == "stop_processing":
                 logger.info(f"[Inference] Received stop processing command for scenario: {scenario_id}")
                 # Stop heartbeat sender
+                
                 if scenario_id in self.heartbeat_senders:
                     self.heartbeat_senders[scenario_id].stop()
                     del self.heartbeat_senders[scenario_id]
@@ -105,8 +108,14 @@ class InferenceKafkaConsumer:
                     self.active_scenarios.remove(scenario_id)
                     logger.info(f"[Inference] Stopped processing scenario: {scenario_id}")
                 return
-
-            # Handle frame message
+        except Exception as e:
+            logger.error(f"[Inference] Something gone wrong while trying to stop processing: {str(e)}")
+            
+            
+            if scenario_id not in self.active_scenarios:
+                logger.warning(f"[Inference] Received frame for scenario {scenario_id} after it was stopped — skipping.")
+                return
+            
             frame = message.get("frame")
             frame_shape = message.get("frame_shape")
             frame_index = message.get("frame_index")
@@ -115,14 +124,12 @@ class InferenceKafkaConsumer:
                 logger.error("[Inference] Received message without required frame data")
                 return
 
-            # Check if scenario is already being processed
-            if scenario_id not in self.active_scenarios:
-                logger.info(f"[Inference] Starting processing for scenario: {scenario_id}")
-                # Start heartbeat sender for this scenario
-                heartbeat_sender = HeartbeatSender(service_id="inference")
-                heartbeat_sender.start_heartbeat(scenario_id)
-                self.heartbeat_senders[scenario_id] = heartbeat_sender
-                self.active_scenarios.add(scenario_id)
+            logger.info(f"[Inference] Starting processing for scenario: {scenario_id}")
+
+            heartbeat_sender = HeartbeatSender(service_id="inference")
+            heartbeat_sender.start_heartbeat(scenario_id)
+            self.heartbeat_senders[scenario_id] = heartbeat_sender
+            self.active_scenarios.add(scenario_id)
 
             try:
                 # Decompress and process frame
@@ -172,6 +179,17 @@ class InferenceKafkaConsumer:
                     if msg.topic == os.getenv('INFERENCE_TOPIC'):
                         logger.info(f"[KafkaConsumer] Received message for frame {msg.value.get('frame_index')}")
                         self.handle_message(msg.value)
+                    elif msg.topic == os.getenv('SCENARIO_TOPIC'):
+                        logger.info(f"[KafkaConsumer] Received message from scenario topic: {msg.value}")
+                        if msg.value.get('type') == 'stop_processing':
+                            scenario_id = msg.value.get('scenario_id')
+                            if scenario_id:
+                                logger.info(f"[KafkaConsumer] Stopping processing for scenario {scenario_id}")
+                                if scenario_id in self.heartbeat_senders:
+                                    self.heartbeat_senders[scenario_id].stop()
+                                    del self.heartbeat_senders[scenario_id]
+                                if scenario_id in self.active_scenarios:
+                                    self.active_scenarios.remove(scenario_id)
                     else:
                         logger.warning(f"[KafkaConsumer] Received message from unexpected topic: {msg.topic}")
             except Exception as e:
@@ -183,7 +201,7 @@ class InferenceKafkaConsumer:
 
     def stop(self):
         self.running = False
-        # Stop all heartbeat senders
+
         for scenario_id, sender in self.heartbeat_senders.items():
             try:
                 sender.stop()

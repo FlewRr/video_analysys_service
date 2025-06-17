@@ -101,7 +101,7 @@ class KafkaListener:
 
             elif message_type == "start":
                 logger.info(f"[KafkaListener] Received start message for scenario {scenario_id} in state {scenario.state}")
-                if scenario.state == "init_startup":
+                if scenario.state in ["active", "inactive", "init_startup"]:
                     logger.info(f"[KafkaListener] Transitioning scenario {scenario_id} from {scenario.state} to in_startup_processing")
                     update_scenario_state(session, scenario_id, "in_startup_processing")
                     session.commit()
@@ -114,6 +114,13 @@ class KafkaListener:
                             "timestamp": datetime.utcnow().isoformat()
                         }
                     )
+
+                    scenario = get_scenario(session, scenario_id)
+                    if not scenario or not scenario.video_path:
+                        logger.error(f"[KafkaListener] No video_path found for scenario {scenario_id}")
+                        update_scenario_state(session, scenario_id, "inactive")
+                        session.commit()
+                        return
 
                     logger.info(f"[KafkaListener] Sending start command to runner for scenario {scenario_id}")
                     send_runner_command({
@@ -166,6 +173,7 @@ class KafkaListener:
                         }
                     )
 
+                    logger.info("[Orchestrator] About to send runner a command!!!!!!")
                     send_runner_command({
                         "type": "shutdown",
                         "scenario_id": scenario_id
@@ -173,7 +181,7 @@ class KafkaListener:
 
                     update_scenario_state(session, scenario_id, "inactive")
                     session.commit()
-                    # Create outbox event for state change
+
                     create_outbox_event(
                         event_type='scenario_state_changed',
                         payload={

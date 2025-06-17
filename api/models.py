@@ -6,7 +6,7 @@ class ScenarioInitRequest(BaseModel):
     video_path: str
 
 class ScenarioStateChangeRequest(BaseModel):
-    new_state: str
+    action: str  # "start" or "shutdown"
 
 class ScenarioStatusResponse(BaseModel):
     scenario_id: str

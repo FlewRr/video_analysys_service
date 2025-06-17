@@ -18,6 +18,8 @@ class InferenceClient:
             cls._instance = super(InferenceClient, cls).__new__(cls)
             cls._instance.producer = None
             cls._instance.total_frames = {}  # Track total frames per scenario
+            cls._instance.processing_flags = {}
+
         return cls._instance
 
     def __init__(self):
@@ -92,13 +94,14 @@ class InferenceClient:
 
             # Store total frames for this scenario
             self.total_frames[scenario_id] = frame_count // 24  # Since we process every 24th frame
+            self.processing_flags[scenario_id] = True
 
             # Sample every 24th frame (roughly 1 frame per second for 24fps video)
             frame_interval = 24
             frame_index = 0
             processed_count = 0
 
-            while True:
+            while self.processing_flags.get(scenario_id, False):
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -136,8 +139,8 @@ class InferenceClient:
             raise
 
     def stop_processing(self, scenario_id: str):
-        """Send stop processing command to inference service"""
         try:
+            self.processing_flags[scenario_id] = False  # <-- Flip the flag
             if not self.producer:
                 logger.error("[InferenceClient] Producer not initialized")
                 self._connect_producer()

@@ -36,9 +36,9 @@ class HeartbeatMonitor:
                 current_time = datetime.utcnow()
                 session = SessionLocal()
                 
-                # Get all active scenarios
+                # Get only active scenarios
                 active_scenarios = session.query(Scenario).filter(
-                    Scenario.state.in_(["active", "in_startup_processing", "in_shutdown_processing"])
+                    Scenario.state == "active"
                 ).all()
 
                 logger.info(f"[HeartbeatMonitor] Checking {len(active_scenarios)} active scenarios")
