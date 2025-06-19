@@ -10,7 +10,7 @@ from state_machine import can_transition
 from kafka_producer import send_runner_command
 from datetime import datetime
 from storage import Scenario
-from outbox import create_outbox_event
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -75,15 +75,6 @@ class KafkaListener:
                 if scenario.state in ["active", "in_startup_processing"]:
                     update_scenario_state(session, scenario_id, "in_shutdown_processing")
                     session.commit()
-                    # Create outbox event for state change
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": "in_shutdown_processing",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
                     logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to in_shutdown_processing due to error")
 
                     # Send shutdown command to stop all services
@@ -95,14 +86,6 @@ class KafkaListener:
                     # Mark as inactive after shutdown
                     update_scenario_state(session, scenario_id, "inactive")
                     session.commit()
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": "inactive",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
                     logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to inactive after error")
 
             elif message_type == "start":
@@ -111,15 +94,6 @@ class KafkaListener:
                     logger.info(f"[KafkaListener] Transitioning scenario {scenario_id} from {scenario.state} to in_startup_processing")
                     update_scenario_state(session, scenario_id, "in_startup_processing")
                     session.commit()
-
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": "in_startup_processing",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
 
                     scenario = get_scenario(session, scenario_id)
                     if not scenario or not scenario.video_path:
@@ -139,15 +113,6 @@ class KafkaListener:
                     update_scenario_state(session, scenario_id, "active")
                     session.commit()
 
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": "active",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
-
                     logger.info(f"[KafkaListener] Successfully updated scenario {scenario_id} state to active")
                 else:
                     logger.warning(f"[KafkaListener] Received start message for scenario {scenario_id} in unexpected state {scenario.state}")
@@ -157,27 +122,9 @@ class KafkaListener:
                 if scenario.state == "active":
                     update_scenario_state(session, scenario_id, "init_shutdown")
                     session.commit()
-                    # Create outbox event for state change
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": "init_shutdown",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
 
                     update_scenario_state(session, scenario_id, "in_shutdown_processing")
                     session.commit()
-                    # Create outbox event for state change
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": "in_shutdown_processing",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
 
                     logger.info("[Orchestrator] About to send runner a command!!!!!!")
                     send_runner_command({
@@ -187,15 +134,6 @@ class KafkaListener:
 
                     update_scenario_state(session, scenario_id, "inactive")
                     session.commit()
-
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": "inactive",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
 
                     logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to inactive")
 
@@ -210,15 +148,6 @@ class KafkaListener:
                     # Update state in database
                     update_scenario_state(session, scenario_id, new_state)
                     session.commit()
-                    # Create outbox event for state change
-                    create_outbox_event(
-                        event_type='scenario_state_changed',
-                        payload={
-                            "scenario_id": scenario_id,
-                            "new_state": new_state,
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
                     logger.info(f"[KafkaListener] Updated scenario {scenario_id} state to {new_state}")
                 else:
                     logger.warning(f"[KafkaListener] Invalid state transition from {scenario.state} to {new_state}")
@@ -230,49 +159,23 @@ class KafkaListener:
             session.close()
 
     def handle_prediction_message(self, message):
-        session = SessionLocal()
-        try:
-            scenario_id = message.get("scenario_id")
-            predictions = message.get("predictions", {})
-
-            logger.info(f"[KafkaListener] Received prediction message: {message}")
-
-            if not scenario_id:
-                logger.error("[KafkaListener] Received prediction without scenario_id")
-                return
-
-            scenario = get_scenario(session, scenario_id)
-            if not scenario:
-                logger.error(f"[KafkaListener] Scenario {scenario_id} not found")
-                return
-
-            if scenario.state != "active":
-                return
-
-            if scenario.predictions is None:
-                scenario.predictions = []
-                logger.info(f"[KafkaListener] Initialized empty predictions list for {scenario_id}")
-            
-            scenario.predictions.append(predictions)
-            scenario.updated_at = datetime.utcnow()
-            
-            session.query(Scenario).filter(Scenario.id == scenario_id).update({
-                "predictions": scenario.predictions,
-                "updated_at": scenario.updated_at
-            })
-            
-            session.commit()
-            logger.info(f"[KafkaListener] Successfully committed prediction update for {scenario_id}")
-            
-            # Verify the update
-            session.refresh(scenario)
-            logger.info(f"[KafkaListener] Verified prediction update for {scenario_id}, current predictions count: {len(scenario.predictions)}")
-        except Exception as e:
-            logger.error(f"[KafkaListener] Error handling prediction message: {str(e)}")
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        payload = message.get('payload', {})
+        scenario_id = payload.get('scenario_id')
+        if scenario_id:
+            # Fetch predictions from inference API
+            try:
+                INFERENCE_API = os.getenv('INFERENCE_API_URL', 'http://inference:8003')
+                resp = requests.get(f"{INFERENCE_API}/predictions/{scenario_id}")
+                if resp.status_code == 200:
+                    predictions = resp.json().get('predictions', [])
+                    session = SessionLocal()
+                    update_scenario_predictions(session, scenario_id, predictions)
+                    session.close()
+                    logger.info(f"[KafkaListener] Updated scenario {scenario_id} predictions from inference DB")
+                else:
+                    logger.error(f"[KafkaListeners] Failed to fetch predictions from inference for scenario {scenario_id}: {resp.text}")
+            except Exception as e:
+                logger.error(f"[KafkaListener] Exception fetching predictions from inference: {str(e)}")
 
     def handle_heartbeat_message(self, message):
         """Handle heartbeat messages from services"""
@@ -304,10 +207,11 @@ class KafkaListener:
 
                     logger.info(f"[KafkaListener] Received message on topic {topic}: {message}")
 
-                    if topic == os.getenv('SCENARIO_TOPIC'):
-                        self.handle_scenario_message(message)
-                    elif topic == os.getenv('PREDICTION_TOPIC'):
+                    # Handle prediction_ready event from inference
+                    if topic == os.getenv('PREDICTION_TOPIC'):
                         self.handle_prediction_message(message)
+                    elif topic == os.getenv('SCENARIO_TOPIC'):
+                        self.handle_scenario_message(message)
                     elif topic == os.getenv('HEARTBEAT_TOPIC'):
                         self.handle_heartbeat_message(message)
                     else:

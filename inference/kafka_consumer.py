@@ -8,12 +8,46 @@ import base64
 from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable, KafkaError
 from yolo import YoloNano
-from kafka_producer import send_prediction
+from kafka_producer import send_prediction, notify_prediction_ready
 from heartbeat import HeartbeatSender
 import threading
 from queue import Queue
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+import queue
 
 logger = logging.getLogger(__name__)
+
+# Database setup for predictions
+DB_PATH = os.getenv('INFERENCE_DB_PATH', 'inference.db')
+engine = create_engine(f'sqlite:///{DB_PATH}', echo=False)
+Base = declarative_base()
+
+class Prediction(Base):
+    __tablename__ = 'predictions'
+    id = Column(Integer, primary_key=True)
+    scenario_id = Column(String, nullable=False)
+    frame_index = Column(Integer, nullable=False)
+    predictions = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(engine)
+SessionLocal = sessionmaker(bind=engine)
+
+def add_prediction(scenario_id: str, frame_index: int, predictions: list):
+    db = SessionLocal()
+    try:
+        pred = Prediction(scenario_id=scenario_id, frame_index=frame_index, predictions=predictions)
+        db.add(pred)
+        db.commit()
+        return pred
+    except Exception as e:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 class InferenceKafkaConsumer:
     _instance = None
@@ -116,12 +150,11 @@ class InferenceKafkaConsumer:
                 logger.info(f"[Inference] Processing interrupted before sending prediction for scenario {scenario_id}, frame {frame_index}")
                 return
 
-            send_prediction(scenario_id, {
-                "scenario_id": scenario_id,
-                "frame_index": frame_index,
-                "predictions": results
-            })
-            logger.info(f"[Inference] Sent predictions for frame {frame_index}")
+            # Store prediction in database
+            add_prediction(scenario_id, frame_index, results)
+            # Instead of sending to runner, notify orchestrator via outbox
+            notify_prediction_ready(scenario_id)
+            logger.info(f"[Inference] Notified orchestrator that predictions are ready for scenario {scenario_id}")
 
         except Exception as e:
             logger.error(f"[Inference] Error processing frame: {str(e)}")
@@ -147,7 +180,7 @@ class InferenceKafkaConsumer:
                 self._process_frame(scenario_id, frame, frame_shape, frame_index)
                 queue.task_done()
 
-            except Queue.Empty:
+            except queue.Empty:
                 # No frames in queue, check if we should continue
                 if stop_event.is_set():
                     break

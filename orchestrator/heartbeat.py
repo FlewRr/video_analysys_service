@@ -5,7 +5,6 @@ import threading
 from datetime import datetime, timedelta
 from storage import SessionLocal, get_scenario, update_scenario_state, Scenario
 from kafka_producer import send_runner_command
-from outbox import create_outbox_event
 
 logger = logging.getLogger(__name__)
 
@@ -105,14 +104,6 @@ class HeartbeatMonitor:
             
             # Then mark as inactive
             update_scenario_state(session, scenario_id, "inactive")
-            create_outbox_event(
-                event_type='scenario_state_changed',
-                payload={
-                    "scenario_id": scenario_id,
-                    "new_state": "inactive",
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-            )
             # Clean up restart attempts
             del self.restart_attempts[scenario_id]
         else:
@@ -125,14 +116,6 @@ class HeartbeatMonitor:
         try:
             # First, shut down the scenario
             update_scenario_state(session, scenario_id, "init_shutdown")
-            create_outbox_event(
-                event_type='scenario_state_changed',
-                payload={
-                    "scenario_id": scenario_id,
-                    "new_state": "init_shutdown",
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-            )
 
             # Send shutdown command
             send_runner_command({
@@ -147,25 +130,8 @@ class HeartbeatMonitor:
             scenario = get_scenario(session, scenario_id)
             if scenario:
                 update_scenario_state(session, scenario_id, "init_startup")
-                create_outbox_event(
-                    event_type='scenario_state_changed',
-                    payload={
-                        "scenario_id": scenario_id,
-                        "new_state": "init_startup",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                )
-
 
                 update_scenario_state(session, scenario_id, "in_startup_processing")
-                create_outbox_event(
-                    event_type='scenario_state_changed',
-                    payload={
-                        "scenario_id": scenario_id,
-                        "new_state": "in_startup_processing",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                )
 
                 send_runner_command({
                     "type": "start",
@@ -175,14 +141,6 @@ class HeartbeatMonitor:
 
                 
                 update_scenario_state(session, scenario_id, "active")
-                create_outbox_event(
-                    event_type='scenario_state_changed',
-                    payload={
-                        "scenario_id": scenario_id,
-                        "new_state": "active",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                )
                 logger.info(f"[HeartbeatMonitor] Restarted scenario {scenario_id} (attempt {self.restart_attempts[scenario_id]})")
         except Exception as e:
             logger.error(f"[HeartbeatMonitor] Error restarting scenario {scenario_id}: {str(e)}")

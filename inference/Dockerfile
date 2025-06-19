@@ -4,6 +4,10 @@ RUN apt-get update && apt-get install -y libgl1 libglib2.0-0
 
 WORKDIR /inference
 
+# Ensure the directory for the SQLite database exists and is writable
+RUN mkdir -p /inference_db && chmod 777 /inference_db
+ENV INFERENCE_DB_PATH=/inference_db/inference.db
+
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 

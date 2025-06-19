@@ -56,7 +56,6 @@ class KafkaListener:
                 self.consumer = KafkaConsumer(
                     os.getenv('RUNNER_TOPIC'),
                     os.getenv('SCENARIO_TOPIC'),
-                    os.getenv('PREDICTION_TOPIC'),
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="runner-group",
@@ -105,13 +104,8 @@ class KafkaListener:
                 self._shutdown_scenario(scenario_id)
 
             elif "predictions" in message:
-                frame_index = message["predictions"].get("frame_index")
-                if frame_index is not None:
-                    self.processed_frames_count[scenario_id] = self.processed_frames_count.get(scenario_id, 0) + 1
-                    total_frames = self.inference_client.get_total_frames(scenario_id)
-                    if total_frames and self.processed_frames_count[scenario_id] >= total_frames:
-                        logger.info(f"[Runner] All frames processed for scenario {scenario_id}")
-                        del self.processed_frames_count[scenario_id]
+                # Remove: runner no longer handles predictions from inference
+                pass
 
         except Exception as e:
             logger.error(f"[Runner] Error handling message: {str(e)}")

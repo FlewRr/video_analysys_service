@@ -47,16 +47,6 @@ def update_scenario_state(event_payload: dict):
             scenario.state = new_state
             scenario.updated_at = datetime.utcnow()
 
-        # Add event to outbox with proper event type
-        outbox_event = OutboxEvent(
-            event_type='scenario_state_changed',
-            payload={
-                "scenario_id": scenario_id,
-                "new_state": new_state,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
-        session.add(outbox_event)
         session.commit()
         logger.info(f"[Scenarios] Updated scenario {scenario_id} state to {new_state}")
     except Exception as e:

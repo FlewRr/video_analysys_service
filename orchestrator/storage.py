@@ -21,16 +21,6 @@ class Scenario(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     predictions = Column(JSON)
 
-class OutboxEvent(Base):
-    __tablename__ = "outbox_events"
-
-    id = Column(Integer, primary_key=True)
-    event_type = Column(String, nullable=False)
-    payload = Column(JSON, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    processed = Column(Boolean, default=False)
-
-# Create tables if they don't exist
 logger.info("[Storage] Creating database tables if they don't exist...")
 Base.metadata.create_all(engine)
 logger.info("[Storage] Database tables created successfully")
@@ -74,20 +64,12 @@ def update_scenario_state(db, scenario_id: str, new_state: str):
         db.commit()
     return scenario
 
-def update_scenario_predictions(db, scenario_id: str, predictions: dict):
-    logger.info(f"[UPDATE SCENARIO PREDICTOPNS] GOT PREDICTIONS: {predictions}")
+def update_scenario_predictions(db, scenario_id: str, predictions: list):
     scenario = get_scenario(db, scenario_id)
     logger.info(f"[SCENARIO] id={scenario.id}, predictions={scenario.predictions}, verdict={bool(scenario is not None)}")
     if scenario is not None:
-        if scenario.predictions is None:
-            scenario.predictions = []
-        
-        preds = scenario.predictions
-        preds.append(predictions)
-        
-        scenario.predictions = preds
+        scenario.predictions = predictions  # Replace, don't append
         scenario.updated_at = datetime.utcnow()
-
         db.commit()
 
 

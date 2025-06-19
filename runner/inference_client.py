@@ -91,6 +91,11 @@ class InferenceClient:
                 if not ret:
                     break
 
+                # Only process every 48th frame
+                if frame_index % 48 != 0:
+                    frame_index += 1
+                    continue
+
                 # Process frame immediately
                 processed_frame = self.preprocess_frame(frame)
                 compressed_frame = self.compress_frame(processed_frame)

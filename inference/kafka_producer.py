@@ -4,8 +4,88 @@ import logging
 import os
 from kafka import KafkaProducer as KafkaClient
 from kafka.errors import NoBrokersAvailable, KafkaError
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+import threading
 
 logger = logging.getLogger(__name__)
+
+# Outbox DB setup
+engine = create_engine('sqlite:///inference.db', echo=False)
+Base = declarative_base()
+
+class OutboxEvent(Base):
+    __tablename__ = 'outbox_events'
+    id = Column(Integer, primary_key=True)
+    event_type = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    processed = Column(Boolean, default=False)
+
+Base.metadata.create_all(engine)
+SessionLocal = sessionmaker(bind=engine)
+
+def create_outbox_event(event_type: str, payload: dict):
+    db = SessionLocal()
+    try:
+        event = OutboxEvent(event_type=event_type, payload=payload)
+        db.add(event)
+        db.commit()
+        return event
+    except Exception as e:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+def get_unsent_events():
+    db = SessionLocal()
+    try:
+        return db.query(OutboxEvent).filter(OutboxEvent.processed == False).all()
+    finally:
+        db.close()
+
+def mark_event_sent(event_id: int):
+    db = SessionLocal()
+    try:
+        event = db.query(OutboxEvent).filter(OutboxEvent.id == event_id).first()
+        if event:
+            event.processed = True
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+# Add poller to send outbox events
+def outbox_poller_loop():
+    producer = InferenceKafkaProducer.get_instance()
+    while True:
+        events = get_unsent_events()
+        for event in events:
+            try:
+                if event.event_type == 'prediction_ready':
+                    topic = os.getenv('PREDICTION_TOPIC')
+                    producer.producer.send(topic, {
+                        'event_type': event.event_type,
+                        'payload': event.payload
+                    })
+                    producer.producer.flush()
+                    mark_event_sent(event.id)
+            except Exception as e:
+                continue
+        time.sleep(5)
+
+# Add function to be called when prediction is ready
+def notify_prediction_ready(scenario_id: str):
+    payload = {
+        'scenario_id': scenario_id,
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    create_outbox_event('prediction_ready', payload)
 
 class InferenceKafkaProducer:
     _instance = None

@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from kafka_consumer import KafkaListener
 from kafka_producer import OrchestratorKafkaProducer
-from outbox import outbox_poller_loop
 from storage import Base, engine  # Import storage to ensure tables are created
 from heartbeat import heartbeat_monitor
 import threading
@@ -18,7 +17,6 @@ Base.metadata.create_all(engine)
 
 # Global variables to store thread references
 kafka_thread = None
-outbox_thread = None
 
 def handle_shutdown(signum, frame):
     logger.info("[Orchestrator] Received shutdown signal")
@@ -32,7 +30,7 @@ signal.signal(signal.SIGINT, handle_shutdown)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global kafka_thread, outbox_thread
+    global kafka_thread
     
     logger.info("[Orchestrator] Starting background tasks...")
     
@@ -42,11 +40,6 @@ async def lifespan(app: FastAPI):
     kafka_thread.start()
     logger.info("[Orchestrator] Kafka listener thread started")
     
-    # Start outbox poller
-    outbox_thread = threading.Thread(target=outbox_poller_loop, daemon=True)
-    outbox_thread.start()
-    logger.info("[Orchestrator] Outbox poller thread started")
-
     # Start heartbeat monitor
     heartbeat_monitor.start()
     logger.info("[Orchestrator] Heartbeat monitor started")
@@ -67,7 +60,6 @@ def health():
     return {
         "status": "healthy",
         "kafka_thread_alive": kafka_thread.is_alive() if kafka_thread else False,
-        "outbox_thread_alive": outbox_thread.is_alive() if outbox_thread else False,
         "heartbeat_monitor_alive": heartbeat_monitor.monitor_thread.is_alive() if heartbeat_monitor.monitor_thread else False
     }
 
