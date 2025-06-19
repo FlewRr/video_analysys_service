@@ -10,49 +10,56 @@ from kafka.errors import NoBrokersAvailable, KafkaError
 from yolo import YoloNano
 from kafka_producer import send_prediction
 from heartbeat import HeartbeatSender
+import threading
+from queue import Queue
 
 logger = logging.getLogger(__name__)
 
 class InferenceKafkaConsumer:
     _instance = None
+    _yolo_initialized = False
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(InferenceKafkaConsumer, cls).__new__(cls)
             cls._instance.consumer = None
             cls._instance.yolo = None
-            cls._instance.heartbeat_senders = {}  # Track heartbeat senders per scenario
-            
+            cls._instance.heartbeat_senders = {}
+            cls._instance.processing_threads = {}
+            cls._instance.processing_flags = {}
+            cls._instance.frame_queues = {}  # Queue for each scenario
+            cls._instance.active_scenarios = set()
+            cls._instance.running = True
+            cls._instance.initialized = False
         return cls._instance
 
     def __init__(self):
-        if not hasattr(self, 'initialized'):
+        if not self.initialized:
             self.initialized = True
-            self.running = True
             logger.info("[KafkaConsumer] Initializing inference consumer...")
             self._connect_consumer()
             self._initialize_yolo()
-            self.active_scenarios = set()
 
     def _initialize_yolo(self):
-        try:
-            logger.info("[KafkaConsumer] Initializing YOLO model...")
-            self.yolo = YoloNano(device='cpu')  # or 'cuda' if GPU available
-            logger.info("[KafkaConsumer] Successfully initialized YOLO model")
-        except Exception as e:
-            logger.error(f"[KafkaConsumer] Error initializing YOLO model: {str(e)}")
-            raise
+        if not InferenceKafkaConsumer._yolo_initialized:
+            try:
+                logger.info("[KafkaConsumer] Initializing YOLO model...")
+                self.yolo = YoloNano(device='cpu')
+                InferenceKafkaConsumer._yolo_initialized = True
+                logger.info("[KafkaConsumer] Successfully initialized YOLO model")
+            except Exception as e:
+                logger.error(f"[KafkaConsumer] Error initializing YOLO model: {str(e)}")
+                raise
 
     def _connect_consumer(self):
         max_retries = 30
         retry_delay = 5
-        
         for attempt in range(max_retries):
             try:
                 logger.info(f"[KafkaConsumer] Attempting to connect to Kafka (attempt {attempt + 1}/{max_retries})")
                 self.consumer = KafkaConsumer(
                     os.getenv('INFERENCE_TOPIC'),
-                    os.getenv('SCENARIO_TOPIC'),  # Add SCENARIO_TOPIC to listen for stop_processing messages
+                    os.getenv('SCENARIO_TOPIC'),
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="inference-group",
@@ -71,20 +78,89 @@ class InferenceKafkaConsumer:
                     raise Exception(f"Could not connect to Kafka after {max_retries} attempts")
 
     def decompress_frame(self, compressed_frame: str, shape: tuple) -> np.ndarray:
-        """Decompress frame data from base64 string"""
         try:
             frame_bytes = base64.b64decode(compressed_frame)
             frame = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
             if frame is None:
                 raise ValueError("Failed to decode frame from JPEG bytes")
-
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-         
-            logger.info(f"[Inference] Successfully decompressed frame with shape {frame.shape}")
             return frame
         except Exception as e:
             logger.error(f"[Inference] Error decompressing frame: {str(e)}")
             raise
+
+    def _process_frame(self, scenario_id: str, frame: str, frame_shape: tuple, frame_index: int):
+        try:
+            stop_event = self.processing_flags.get(scenario_id)
+            if stop_event is None or stop_event.is_set():
+                logger.info(f"[Inference] Processing stopped or not active for scenario {scenario_id}, skipping frame {frame_index}")
+                return
+
+            # Check stop flag before decompression
+            if stop_event.is_set():
+                return
+
+            decompressed_frame = self.decompress_frame(frame, frame_shape)
+            logger.info(f"[Inference] Processing frame {frame_index} for scenario {scenario_id}")
+
+            # Check stop flag before YOLO prediction
+            if stop_event.is_set():
+                logger.info(f"[Inference] Processing interrupted before prediction for scenario {scenario_id}, frame {frame_index}")
+                return
+
+            results = self.yolo.predict(decompressed_frame)
+            logger.info(f"[Inference] Found {len(results)} objects in frame {frame_index}")
+
+            # Check stop flag before sending prediction
+            if stop_event.is_set():
+                logger.info(f"[Inference] Processing interrupted before sending prediction for scenario {scenario_id}, frame {frame_index}")
+                return
+
+            send_prediction(scenario_id, {
+                "scenario_id": scenario_id,
+                "frame_index": frame_index,
+                "predictions": results
+            })
+            logger.info(f"[Inference] Sent predictions for frame {frame_index}")
+
+        except Exception as e:
+            logger.error(f"[Inference] Error processing frame: {str(e)}")
+
+    def _process_scenario_frames(self, scenario_id: str):
+        """Process frames for a specific scenario in a single thread"""
+        logger.info(f"[Inference] Starting frame processing thread for scenario {scenario_id}")
+        queue = self.frame_queues[scenario_id]
+        stop_event = self.processing_flags[scenario_id]
+
+        while not stop_event.is_set():
+            try:
+                # Get next frame from queue with shorter timeout
+                frame_data = queue.get(timeout=0.1)  # Reduced timeout to check stop flag more frequently
+                if frame_data is None:  # Poison pill
+                    break
+
+                # Check stop flag before processing frame
+                if stop_event.is_set():
+                    break
+
+                frame, frame_shape, frame_index = frame_data
+                self._process_frame(scenario_id, frame, frame_shape, frame_index)
+                queue.task_done()
+
+            except Queue.Empty:
+                # No frames in queue, check if we should continue
+                if stop_event.is_set():
+                    break
+                continue
+            except Exception as e:
+                logger.error(f"[Inference] Error in scenario processing thread: {str(e)}")
+                if stop_event.is_set():
+                    break
+
+        logger.info(f"[Inference] Stopping frame processing thread for scenario {scenario_id}")
+        # Clean up
+        self.frame_queues.pop(scenario_id, None)
+        self.processing_threads.pop(scenario_id, None)
 
     def handle_message(self, message: dict):
         try:
@@ -95,79 +171,61 @@ class InferenceKafkaConsumer:
                 logger.error("[Inference] Received message without scenario_id")
                 return
 
+            # Handle stop commands immediately with highest priority
             if msg_type == "stop_processing":
                 logger.info(f"[Inference] Received stop processing command for scenario: {scenario_id}")
-                # Stop heartbeat sender
-                
+                # Stop heartbeat sender first
                 if scenario_id in self.heartbeat_senders:
                     self.heartbeat_senders[scenario_id].stop()
                     del self.heartbeat_senders[scenario_id]
-
-                # Stop processing this scenario
-                if scenario_id in self.active_scenarios:
-                    self.active_scenarios.remove(scenario_id)
-                    logger.info(f"[Inference] Stopped processing scenario: {scenario_id}")
+                
+                # Clear frame queue and stop processing
+                if scenario_id in self.frame_queues:
+                    # Replace the queue with a new empty one
+                    self.frame_queues[scenario_id] = Queue()
+                    logger.info(f"[Inference] Cleared frame queue for scenario {scenario_id}")
+                
+                # Set stop flag
+                if scenario_id in self.processing_flags:
+                    self.processing_flags[scenario_id].set()
+                
+                self.active_scenarios.discard(scenario_id)
+                logger.info(f"[Inference] Stopped processing for scenario {scenario_id}")
                 return
-        except Exception as e:
-            logger.error(f"[Inference] Something gone wrong while trying to stop processing: {str(e)}")
-            
-            
+
+            # Skip frame processing if scenario is not active
             if scenario_id not in self.active_scenarios:
-                logger.warning(f"[Inference] Received frame for scenario {scenario_id} after it was stopped — skipping.")
-                return
-            
-            frame = message.get("frame")
-            frame_shape = message.get("frame_shape")
-            frame_index = message.get("frame_index")
-
-            if not all([frame, frame_shape, frame_index]):
-                logger.error("[Inference] Received message without required frame data")
                 return
 
-            logger.info(f"[Inference] Starting processing for scenario: {scenario_id}")
+            if msg_type == "frame":
+                frame = message.get("frame")
+                frame_shape = message.get("frame_shape")
+                frame_index = message.get("frame_index")
 
-            heartbeat_sender = HeartbeatSender(service_id="inference")
-            heartbeat_sender.start_heartbeat(scenario_id)
-            self.heartbeat_senders[scenario_id] = heartbeat_sender
-            self.active_scenarios.add(scenario_id)
+                if not all([frame, frame_shape, frame_index is not None]):
+                    logger.error("[Inference] Missing frame data")
+                    return
 
-            try:
-                # Decompress and process frame
-                decompressed_frame = self.decompress_frame(frame, frame_shape)
-                
-                # Process frame with YOLO model
-                results = self.yolo.predict(decompressed_frame)
-                
-                # Send predictions
-                send_prediction(scenario_id, {
-                    "scenario_id": scenario_id,
-                    "frame_index": frame_index,
-                    "predictions": results
-                })
-                
-            except Exception as e:
-                logger.error(f"[Inference] Error processing frame: {str(e)}")
-                # Stop heartbeat sender
-                if scenario_id in self.heartbeat_senders:
-                    self.heartbeat_senders[scenario_id].stop()
-                    del self.heartbeat_senders[scenario_id]
+                # Initialize queue and processing thread if not already done
+                if scenario_id not in self.frame_queues:
+                    self.frame_queues[scenario_id] = Queue()
+                    self.processing_flags[scenario_id] = threading.Event()
+                    # Start processing thread immediately
+                    thread = threading.Thread(
+                        target=self._process_scenario_frames,
+                        args=(scenario_id,),
+                        daemon=True
+                    )
+                    self.processing_threads[scenario_id] = thread
+                    thread.start()
+                    logger.info(f"[Inference] Started frame processing thread for scenario {scenario_id}")
 
-                # Make sure to remove scenario from active scenarios in case of error
-                if scenario_id in self.active_scenarios:
-                    self.active_scenarios.remove(scenario_id)
-                raise
+                # Add frame to queue
+                self.frame_queues[scenario_id].put((frame, frame_shape, frame_index))
+                logger.info(f"[Inference] Added frame {frame_index} to queue for scenario {scenario_id}")
 
         except Exception as e:
-            logger.error(f"[Inference] Error handling message: {str(e)}")
-            # Stop heartbeat sender
-            if scenario_id in self.heartbeat_senders:
-                self.heartbeat_senders[scenario_id].stop()
-                del self.heartbeat_senders[scenario_id]
-
-            # Make sure to remove scenario from active scenarios in case of error
-            if scenario_id in self.active_scenarios:
-                self.active_scenarios.remove(scenario_id)
-            raise
+            logger.error(f"[Inference] Exception in handle_message: {str(e)}")
 
     def listen(self):
         logger.info("[KafkaConsumer] Starting to listen for Kafka messages...")
@@ -176,22 +234,20 @@ class InferenceKafkaConsumer:
                 for msg in self.consumer:
                     if not self.running:
                         break
+
                     if msg.topic == os.getenv('INFERENCE_TOPIC'):
-                        logger.info(f"[KafkaConsumer] Received message for frame {msg.value.get('frame_index')}")
                         self.handle_message(msg.value)
                     elif msg.topic == os.getenv('SCENARIO_TOPIC'):
-                        logger.info(f"[KafkaConsumer] Received message from scenario topic: {msg.value}")
-                        if msg.value.get('type') == 'stop_processing':
+                        if msg.value.get('type') == 'start':
                             scenario_id = msg.value.get('scenario_id')
                             if scenario_id:
-                                logger.info(f"[KafkaConsumer] Stopping processing for scenario {scenario_id}")
-                                if scenario_id in self.heartbeat_senders:
-                                    self.heartbeat_senders[scenario_id].stop()
-                                    del self.heartbeat_senders[scenario_id]
-                                if scenario_id in self.active_scenarios:
-                                    self.active_scenarios.remove(scenario_id)
-                    else:
-                        logger.warning(f"[KafkaConsumer] Received message from unexpected topic: {msg.topic}")
+                                logger.info(f"[KafkaConsumer] Starting processing for scenario {scenario_id}")
+                                self.active_scenarios.add(scenario_id)
+                                self.processing_flags[scenario_id] = threading.Event()
+                                if scenario_id not in self.heartbeat_senders:
+                                    heartbeat_sender = HeartbeatSender(service_id="inference")
+                                    heartbeat_sender.start_heartbeat(scenario_id)
+                                    self.heartbeat_senders[scenario_id] = heartbeat_sender
             except Exception as e:
                 logger.error(f"[KafkaConsumer] Error in message processing loop: {str(e)}")
                 if self.running:
@@ -201,13 +257,25 @@ class InferenceKafkaConsumer:
 
     def stop(self):
         self.running = False
+        # Stop all scenario processing
+        for scenario_id in list(self.processing_flags.keys()):
+            self.processing_flags[scenario_id].set()
+            if scenario_id in self.frame_queues:
+                self.frame_queues[scenario_id].put(None)  # Poison pill
 
+        # Stop all heartbeat senders
         for scenario_id, sender in self.heartbeat_senders.items():
             try:
                 sender.stop()
             except Exception as e:
                 logger.error(f"[KafkaConsumer] Error stopping heartbeat sender for scenario {scenario_id}: {str(e)}")
+
+        # Clean up
         self.heartbeat_senders.clear()
+        self.processing_threads.clear()
+        self.frame_queues.clear()
+        self.active_scenarios.clear()
+        self.processing_flags.clear()
 
         if self.consumer:
             try:

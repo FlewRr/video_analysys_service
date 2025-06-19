@@ -18,8 +18,8 @@ class KafkaListener:
             cls._instance = super(KafkaListener, cls).__new__(cls)
             cls._instance.consumer = None
             cls._instance.inference_client = None
-            cls._instance.processed_frames_count = {}  # Track number of processed frames per scenario
-            cls._instance.heartbeat_senders = {}  # Track heartbeat senders per scenario
+            cls._instance.processed_frames_count = {}
+            cls._instance.heartbeat_senders = {}
         return cls._instance
 
     def __init__(self):
@@ -31,10 +31,8 @@ class KafkaListener:
             self.inference_client = InferenceClient.get_instance()
 
     def _connect_producer(self):
-        """Connect to Kafka producer"""
         max_retries = 30
         retry_delay = 5
-        
         for attempt in range(max_retries):
             try:
                 self.producer = KafkaProducer(
@@ -51,14 +49,13 @@ class KafkaListener:
                     raise Exception(f"Could not connect to Kafka producer after {max_retries} attempts")
 
     def _connect_consumer(self):
-        max_retries = 30  # Increased retries for Docker environment
-        retry_delay = 5   # Increased delay between retries
-        
+        max_retries = 30
+        retry_delay = 5
         for attempt in range(max_retries):
             try:
                 self.consumer = KafkaConsumer(
                     os.getenv('RUNNER_TOPIC'),
-                    os.getenv('SCENARIO_TOPIC'),  # Add SCENARIO_TOPIC to listen for shutdown messages
+                    os.getenv('SCENARIO_TOPIC'),
                     os.getenv('PREDICTION_TOPIC'),
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
@@ -67,8 +64,8 @@ class KafkaListener:
                     enable_auto_commit=True,
                     session_timeout_ms=30000,
                     heartbeat_interval_ms=10000,
-                    max_poll_interval_ms=300000,  # 5 minutes
-                    max_poll_records=1  # Process one record at a time
+                    max_poll_interval_ms=300000,
+                    max_poll_records=1
                 )
                 logger.info("[KafkaListener] Successfully connected to Kafka")
                 return
@@ -80,11 +77,9 @@ class KafkaListener:
                     raise Exception(f"Could not connect to Kafka after {max_retries} attempts")
 
     def handle_message(self, message):
-        """Handle incoming Kafka messages"""
         try:
             msg_type = message.get('type')
             scenario_id = message.get('scenario_id')
-
             if not scenario_id:
                 logger.error("[Runner] Received message without scenario_id")
                 return
@@ -94,87 +89,56 @@ class KafkaListener:
                 if not video_path:
                     logger.error("[Runner] Received start command without video_path")
                     return
-
                 logger.info(f"[Runner] Starting processing for video: {video_path}")
                 try:
-                    # Start heartbeat sender for this scenario
-                    heartbeat_sender = HeartbeatSender(service_id="runner")
-                    heartbeat_sender.start_heartbeat(scenario_id)
-                    self.heartbeat_senders[scenario_id] = heartbeat_sender
-
-                    # Try to process the video
+                    hb_sender = HeartbeatSender(service_id="runner")
+                    hb_sender.start_heartbeat(scenario_id)
+                    self.heartbeat_senders[scenario_id] = hb_sender
                     self.inference_client.send_to_inference(scenario_id, video_path)
                 except FileNotFoundError as e:
-                    # Stop heartbeat sender
-                    if scenario_id in self.heartbeat_senders:
-                        self.heartbeat_senders[scenario_id].stop()
-                        del self.heartbeat_senders[scenario_id]
-
-                    # Send error message to orchestrator
-                    error_msg = {
-                        "type": "error",
-                        "scenario_id": scenario_id,
-                        "error": str(e)
-                    }
-                    self.producer.send(os.getenv('ORCHESTRATOR_TOPIC'), error_msg)
-                    logger.error(f"[Runner] Error processing video: {str(e)}")
-                    # Clean up tracking
-                    if scenario_id in self.processed_frames_count:
-                        del self.processed_frames_count[scenario_id]
-                    return
+                    self._handle_start_error(scenario_id, str(e))
                 except Exception as e:
-                    # Stop heartbeat sender
-                    if scenario_id in self.heartbeat_senders:
-                        self.heartbeat_senders[scenario_id].stop()
-                        del self.heartbeat_senders[scenario_id]
-
-                    logger.error(f"[Runner] Error processing video: {str(e)}")
-                    # Clean up tracking
-                    if scenario_id in self.processed_frames_count:
-                        del self.processed_frames_count[scenario_id]
-                    return
+                    self._handle_start_error(scenario_id, str(e))
 
             elif msg_type == 'shutdown':
                 logger.info(f"[Runner] Received shutdown command for scenario: {scenario_id}")
-                # Stop heartbeat sender
-                if scenario_id in self.heartbeat_senders:
-                    self.heartbeat_senders[scenario_id].stop()
-                    del self.heartbeat_senders[scenario_id]
+                self._shutdown_scenario(scenario_id)
 
-                # Notify inference service to stop processing
-                self.inference_client.stop_processing(scenario_id)
-                logger.info(f"[Runner] Notified inference service to stop processing scenario: {scenario_id}")
-                
-                # Clean up tracking
-                if scenario_id in self.processed_frames_count:
-                    del self.processed_frames_count[scenario_id]
-
-            elif "predictions" in message:  # Handle prediction message
-                predictions = message.get("predictions", {})
-                frame_index = predictions.get("frame_index")
-                
+            elif "predictions" in message:
+                frame_index = message["predictions"].get("frame_index")
                 if frame_index is not None:
-                    # Increment processed frames counter
-                    if scenario_id not in self.processed_frames_count:
-                        self.processed_frames_count[scenario_id] = 0
-                    self.processed_frames_count[scenario_id] += 1
-                    
-                    # Check if all frames are processed
+                    self.processed_frames_count[scenario_id] = self.processed_frames_count.get(scenario_id, 0) + 1
                     total_frames = self.inference_client.get_total_frames(scenario_id)
                     if total_frames and self.processed_frames_count[scenario_id] >= total_frames:
-                        logger.info(f"[Runner] All frames processed for scenario {scenario_id}, sending shutdown message")
-                        send_scenario_message({
-                            "type": "shutdown",
-                            "scenario_id": scenario_id
-                        })
-                        # Clean up tracking
+                        logger.info(f"[Runner] All frames processed for scenario {scenario_id}")
                         del self.processed_frames_count[scenario_id]
 
         except Exception as e:
             logger.error(f"[Runner] Error handling message: {str(e)}")
-            # Clean up tracking
             if scenario_id in self.processed_frames_count:
                 del self.processed_frames_count[scenario_id]
+
+    def _handle_start_error(self, scenario_id, error):
+        if scenario_id in self.heartbeat_senders:
+            self.heartbeat_senders[scenario_id].stop()
+            del self.heartbeat_senders[scenario_id]
+        self.producer.send(os.getenv('ORCHESTRATOR_TOPIC'), {
+            "type": "error",
+            "scenario_id": scenario_id,
+            "error": error
+        })
+        logger.error(f"[Runner] Error processing video: {error}")
+        if scenario_id in self.processed_frames_count:
+            del self.processed_frames_count[scenario_id]
+
+    def _shutdown_scenario(self, scenario_id):
+        if scenario_id in self.heartbeat_senders:
+            self.heartbeat_senders[scenario_id].stop()
+            del self.heartbeat_senders[scenario_id]
+        self.inference_client.stop_processing(scenario_id)
+        logger.info(f"[Runner] Notified inference service to stop processing scenario: {scenario_id}")
+        if scenario_id in self.processed_frames_count:
+            del self.processed_frames_count[scenario_id]
 
     def listen(self):
         logger.info("[KafkaListener] Starting to listen for Kafka messages...")
@@ -185,16 +149,12 @@ class KafkaListener:
                         break
                     try:
                         logger.info(f"[RUNNER] GOT MESSAGE: {msg.value}")
-                        message = msg.value
-                        self.handle_message(message)
-                        # Commit offset after successful processing
+                        self.handle_message(msg.value)
                         self.consumer.commit()
                     except Exception as e:
                         logger.error(f"[KafkaListener] Error processing message: {str(e)}")
-                        # Don't re-raise to continue processing other messages
-                        continue
             except Exception as e:
-                logger.error(f"[KafkaListener] Error in message processing loop: {str(e)}")
+                logger.error(f"[KafkaListener] Error in message loop: {str(e)}")
                 if self.running:
                     logger.info("[KafkaListener] Attempting to reconnect...")
                     time.sleep(5)
@@ -202,24 +162,22 @@ class KafkaListener:
 
     def stop(self):
         self.running = False
-        # Stop all heartbeat senders
         for scenario_id, sender in self.heartbeat_senders.items():
             try:
                 sender.stop()
             except Exception as e:
-                logger.error(f"[KafkaListener] Error stopping heartbeat sender for scenario {scenario_id}: {str(e)}")
+                logger.error(f"[KafkaListener] Error stopping heartbeat for {scenario_id}: {str(e)}")
         self.heartbeat_senders.clear()
-
         if self.consumer:
             try:
                 self.consumer.close()
-                logger.info("[KafkaListener] Successfully closed consumer")
+                logger.info("[KafkaListener] Closed consumer")
             except Exception as e:
                 logger.error(f"[KafkaListener] Error closing consumer: {str(e)}")
         if self.producer:
             try:
                 self.producer.close()
-                logger.info("[KafkaListener] Successfully closed producer")
+                logger.info("[KafkaListener] Closed producer")
             except Exception as e:
                 logger.error(f"[KafkaListener] Error closing producer: {str(e)}")
         if self.inference_client:

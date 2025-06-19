@@ -27,10 +27,16 @@ class KafkaListener:
         
         for attempt in range(max_retries):
             try:
-                self.consumer = KafkaConsumer(
+                logger.info(f"[KafkaListener] Attempting to connect to Kafka (attempt {attempt + 1}/{max_retries})")
+                topics = [
                     os.getenv('SCENARIO_TOPIC'),
                     os.getenv('PREDICTION_TOPIC'),
-                    os.getenv('HEARTBEAT_TOPIC'),
+                    os.getenv('HEARTBEAT_TOPIC')
+                ]
+                logger.info(f"[KafkaListener] Subscribing to topics: {topics}")
+                
+                self.consumer = KafkaConsumer(
+                    *topics,
                     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     group_id="orchestrator-group",
@@ -229,6 +235,8 @@ class KafkaListener:
             scenario_id = message.get("scenario_id")
             predictions = message.get("predictions", {})
 
+            logger.info(f"[KafkaListener] Received prediction message: {message}")
+
             if not scenario_id:
                 logger.error("[KafkaListener] Received prediction without scenario_id")
                 return
@@ -238,16 +246,16 @@ class KafkaListener:
                 logger.error(f"[KafkaListener] Scenario {scenario_id} not found")
                 return
 
-            # Initialize predictions list if it doesn't exist
+            if scenario.state != "active":
+                return
+
             if scenario.predictions is None:
                 scenario.predictions = []
                 logger.info(f"[KafkaListener] Initialized empty predictions list for {scenario_id}")
             
-            # Add new prediction to the list
             scenario.predictions.append(predictions)
             scenario.updated_at = datetime.utcnow()
             
-            # Explicitly update the predictions column
             session.query(Scenario).filter(Scenario.id == scenario_id).update({
                 "predictions": scenario.predictions,
                 "updated_at": scenario.updated_at
@@ -258,14 +266,11 @@ class KafkaListener:
             
             # Verify the update
             session.refresh(scenario)
-        except Exception as e:
-            logger.error(f"[KafkaListener] Error updating predictions in database: {str(e)}")
-            session.rollback()
-            raise
-
+            logger.info(f"[KafkaListener] Verified prediction update for {scenario_id}, current predictions count: {len(scenario.predictions)}")
         except Exception as e:
             logger.error(f"[KafkaListener] Error handling prediction message: {str(e)}")
             session.rollback()
+            raise
         finally:
             session.close()
 

@@ -54,9 +54,16 @@ class InferenceKafkaProducer:
                 "scenario_id": scenario_id,
                 "predictions": predictions
             }
+            logger.info(f"[Producer] Sending prediction message: {message}")
+            
+            # Send message and wait for acknowledgment
             future = self.producer.send(os.getenv('PREDICTION_TOPIC'), message)
-            future.get(timeout=10)  # Wait for the message to be delivered
-            logger.info(f"[Producer] Successfully sent prediction for scenario {scenario_id}")
+            # Wait for the message to be delivered
+            future.get(timeout=10)
+            # Flush to ensure message is sent
+            self.producer.flush()
+            
+            logger.info(f"[Producer] Successfully sent prediction for scenario {scenario_id} to topic {os.getenv('PREDICTION_TOPIC')}")
         except Exception as e:
             logger.error(f"[Producer] Error sending prediction: {str(e)}")
             raise
